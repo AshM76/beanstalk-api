@@ -35,5 +35,6 @@ app.use('/api', require('./routes/api/chat.route'))
 app.use('/api', require('./routes/api/deals.route'))         // rewards
 app.use('/api', require('./routes/api/inventory.route'))     // content library
 app.use('/api', require('./routes/api/cloudstorage.route'))
+app.use('/api', require('./routes/api/trading.route'))          // Alpaca paper trading
 
 module.exports = app
