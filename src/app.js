@@ -30,6 +30,7 @@ app.use('/api', require('./routes/web/stores.route'))
 app.use('/api', require('./routes/web/clinicians.route'))    // mentors
 
 // ── Routes: shared ────────────────────────────────────────────
+app.use('/api', require('./routes/api/market.route'))        // Alpaca market data
 app.use('/api', require('./routes/api/roles.route'))
 app.use('/api', require('./routes/api/chat.route'))
 app.use('/api', require('./routes/api/deals.route'))         // rewards
