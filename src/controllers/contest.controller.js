@@ -47,7 +47,7 @@ async function createContest(req, res) {
       age_groups: age_groups || ['high_school', 'college', 'adults'],
       start_date: startDate,
       end_date: endDate,
-      starting_balance: starting_balance || 100000,
+      starting_balance: starting_balance || 10000,
       rules,
       prizes: prizes || [],
       max_participants,

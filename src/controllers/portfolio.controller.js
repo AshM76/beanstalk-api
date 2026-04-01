@@ -21,7 +21,21 @@ async function getPortfolio(req, res) {
     const portfolio = await portfolioService.getUserMainPortfolio(userId)
 
     if (!portfolio) {
-      return res.status(404).json({ error: 'Portfolio not found' })
+      // Create main portfolio if it doesn't exist
+      const newPortfolio = await portfolioService.createPortfolio(userId, 10000, 'main')
+      return res.json({
+        portfolio_id: newPortfolio.portfolio_id,
+        user_id: newPortfolio.user_id,
+        starting_balance: newPortfolio.starting_balance,
+        current_balance: newPortfolio.current_cash_balance,
+        invested_value: newPortfolio.total_position_value,
+        total_value: newPortfolio.total_portfolio_value,
+        total_return_percent: newPortfolio.total_return_percent,
+        total_return_amount: newPortfolio.total_return_amount,
+        positions: newPortfolio.positions,
+        metrics: { daily_return: 0, weekly_return: 0, monthly_return: 0 },
+        updated_at: newPortfolio.updated_at,
+      })
     }
 
     // Calculate performance metrics

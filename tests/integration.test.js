@@ -188,13 +188,13 @@ describe('Portfolio API Tests', () => {
         .post('/api/portfolio/create')
         .send({
           user_id: testUserId,
-          starting_balance: 100000,
+          starting_balance: 10000,
         });
 
       expect(res.status).toBe(200);
       expect(res.body.portfolio_id).toBeDefined();
-      expect(res.body.current_cash_balance).toBe(100000);
-      expect(res.body.total_portfolio_value).toBe(100000);
+      expect(res.body.current_cash_balance).toBe(10000);
+      expect(res.body.total_portfolio_value).toBe(10000);
     });
 
     test('should retrieve user portfolio', async () => {
@@ -202,7 +202,7 @@ describe('Portfolio API Tests', () => {
         .get(`/api/portfolio/${testUserId}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.starting_balance).toBe(100000);
+      expect(res.body.starting_balance).toBe(10000);
       expect(res.body.positions).toEqual([]);
     });
   });
@@ -222,7 +222,7 @@ describe('Portfolio API Tests', () => {
       expect(res.body.transaction_id).toBeDefined();
       expect(res.body.action).toBe('buy');
       expect(res.body.status).toBe('completed');
-      expect(res.body.portfolio_updated.cash_balance).toBe(98500); // 100000 - 1500
+      expect(res.body.portfolio_updated.cash_balance).toBe(8500); // 10000 - 1500
       expect(res.body.portfolio_updated.position_count).toBe(1);
     });
 

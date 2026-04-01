@@ -25,7 +25,7 @@ async function createContest(creatorId, contestData) {
     end_date: contestData.end_date,
     registration_deadline: contestData.registration_deadline || contestData.start_date,
     rules: contestData.rules,
-    starting_balance: contestData.starting_balance || 100000,
+    starting_balance: contestData.starting_balance || 10000,
     allow_shorting: contestData.allow_shorting || false,
     allow_margin: contestData.allow_margin || false,
     max_position_size_percent: contestData.max_position_size_percent || 25,
