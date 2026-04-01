@@ -4,6 +4,7 @@
  */
 
 const contestService = require('../../services/contest.service')
+const portfolioService = require('../../services/portfolio.service')
 
 /**
  * POST /api/contests
@@ -196,8 +197,53 @@ async function joinContest(req, res) {
 }
 
 /**
- * GET /api/contests/:contestId/leaderboard
- * Get contest leaderboard
+ * GET /api/contests/:contestId/participants
+ * Get contest participants with real-time status (admin only)
+ */
+async function getContestParticipants(req, res) {
+  try {
+    const { contestId } = req.params
+
+    // Check admin permission
+    if (!['admin', 'contest_manager'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Only admins and contest managers can view participants' })
+    }
+
+    const participants = await contestService.getContestParticipants(contestId)
+
+    // Get real-time portfolio data for each participant
+    const participantsWithMetrics = await Promise.all(
+      participants.map(async (participant) => {
+        const portfolio = await portfolioService.getPortfolio(participant.portfolio_snapshot_id)
+        const metrics = await portfolioService.calculatePerformanceMetrics(participant.portfolio_snapshot_id)
+
+        return {
+          participation_id: participant.participation_id,
+          user_id: participant.user_id,
+          age_group: participant.age_group_at_entry,
+          entry_date: participant.entry_date,
+          status: participant.status,
+          portfolio: {
+            portfolio_id: portfolio.portfolio_id,
+            current_value: portfolio.total_portfolio_value,
+            total_return_percent: portfolio.total_return_percent,
+            position_count: portfolio.position_count,
+          },
+          metrics: metrics,
+        }
+      })
+    )
+
+    res.json({
+      contest_id: contestId,
+      participant_count: participantsWithMetrics.length,
+      participants: participantsWithMetrics,
+    })
+  } catch (error) {
+    console.error('Contest participants fetch error:', error)
+    res.status(500).json({ error: 'Failed to fetch participants' })
+  }
+}
  */
 async function getLeaderboard(req, res) {
   try {

@@ -390,8 +390,38 @@ async function updateContestInDatabase(contest) {
 }
 
 async function getContestParticipants(contestId, ageGroup) {
-  // TODO: Implement BigQuery query with portfolio data joined
-  return []
+  try {
+    // Query BigQuery for contest participants
+    const query = `
+      SELECT
+        cp.participation_id,
+        cp.contest_id,
+        cp.user_id,
+        cp.age_group_at_entry,
+        cp.entry_date,
+        cp.status,
+        cp.portfolio_snapshot_id
+      FROM \`${process.env.BIGQUERY_PROJECT}.${process.env.BIGQUERY_DATASET}.contest_participation\` cp
+      WHERE cp.contest_id = @contestId
+      ${ageGroup ? 'AND cp.age_group_at_entry = @ageGroup' : ''}
+      ORDER BY cp.entry_date DESC
+    `
+
+    const options = {
+      query,
+      params: { contestId },
+    }
+
+    if (ageGroup) {
+      options.params.ageGroup = ageGroup
+    }
+
+    const [rows] = await bigquery.query(options)
+    return rows
+  } catch (error) {
+    console.error('Error fetching contest participants:', error)
+    throw error
+  }
 }
 
 async function updateParticipantWithPrize(userId, contestId, rank, prizeName) {
@@ -406,4 +436,5 @@ module.exports = {
   joinContest,
   getLeaderboard,
   concludeContest,
+  getContestParticipants,
 }
