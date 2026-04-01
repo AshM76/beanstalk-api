@@ -38,5 +38,7 @@ app.use('/api', require('./routes/api/cloudstorage.route'))
 app.use('/api', require('./routes/api/trading.route'))          // Alpaca paper trading
 app.use('/api', require('./routes/api/onboarding.route'))     // age verification & parental consent
 app.use('/api', require('./routes/api/compliance.route'))     // EULA & consent management
+app.use('/api', require('./routes/api/portfolio.route'))      // portfolio & trading operations
+app.use('/api', require('./routes/api/contest.route'))        // contests & leaderboards
 
 module.exports = app
