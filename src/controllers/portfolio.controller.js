@@ -4,6 +4,7 @@
  */
 
 const portfolioService = require('../../services/portfolio.service')
+const alpacaService = require('../../services/alpaca.service')
 
 /**
  * GET /api/portfolio/:userId
@@ -63,12 +64,12 @@ async function executeTrade(req, res) {
       return res.status(400).json({ error: 'Invalid action. Must be "buy" or "sell"' })
     }
 
-    if (!symbol || !quantity || !price) {
-      return res.status(400).json({ error: 'Missing required fields: symbol, quantity, price' })
+    if (!symbol || !quantity) {
+      return res.status(400).json({ error: 'Missing required fields: symbol, quantity' })
     }
 
-    if (quantity <= 0 || price <= 0) {
-      return res.status(400).json({ error: 'Quantity and price must be positive' })
+    if (quantity <= 0) {
+      return res.status(400).json({ error: 'Quantity must be positive' })
     }
 
     // Get user's portfolio
@@ -78,12 +79,25 @@ async function executeTrade(req, res) {
       return res.status(404).json({ error: 'Portfolio not found' })
     }
 
+    // Check market hours
+    const marketClock = await alpacaService.getMarketClock()
+    if (!marketClock.is_open) {
+      return res.status(400).json({ error: 'Market is closed. Trading is only allowed during market hours (9:30 AM - 4:00 PM ET)' })
+    }
+
+    // Get current price from Alpaca
+    const currentPriceData = await alpacaService.getPrice(symbol)
+    const currentPrice = currentPriceData.price
+
+    // Use current price for trade execution
+    const tradePrice = currentPrice
+
     let transaction
 
     if (action === 'buy') {
-      transaction = await portfolioService.executeBuyTrade(portfolio.portfolio_id, symbol, quantity, price)
+      transaction = await portfolioService.executeBuyTrade(portfolio.portfolio_id, symbol, quantity, tradePrice)
     } else {
-      transaction = await portfolioService.executeSellTrade(portfolio.portfolio_id, symbol, quantity, price)
+      transaction = await portfolioService.executeSellTrade(portfolio.portfolio_id, symbol, quantity, tradePrice)
     }
 
     const updatedPortfolio = await portfolioService.getPortfolio(portfolio.portfolio_id)
@@ -94,7 +108,7 @@ async function executeTrade(req, res) {
       action: action,
       symbol: symbol,
       quantity: quantity,
-      price: price,
+      price: tradePrice,
       total_amount: transaction.amount,
       portfolio_updated: {
         cash_balance: updatedPortfolio.current_cash_balance,
@@ -157,7 +171,22 @@ async function getTransactions(req, res) {
 async function updatePrices(req, res) {
   try {
     const { portfolioId } = req.params
-    const { priceMap } = req.body
+    let { priceMap } = req.body
+
+    // If no priceMap provided, fetch real-time prices from Alpaca
+    if (!priceMap || Object.keys(priceMap).length === 0) {
+      const portfolio = await portfolioService.getPortfolio(portfolioId)
+      if (!portfolio || !portfolio.positions || portfolio.positions.length === 0) {
+        return res.status(400).json({ error: 'No positions to update or portfolio not found' })
+      }
+
+      const symbols = portfolio.positions.map(pos => pos.symbol)
+      const prices = await alpacaService.getPrices(symbols)
+      priceMap = {}
+      prices.forEach(p => {
+        priceMap[p.symbol] = p.price
+      })
+    }
 
     if (!priceMap || typeof priceMap !== 'object') {
       return res.status(400).json({ error: 'priceMap is required and must be an object' })
