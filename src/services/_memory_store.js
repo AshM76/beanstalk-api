@@ -254,6 +254,9 @@ async function createContest(creatorId, data) {
     total_prize_pool: calculateTotalPrizePool(data.prizes),
     status,
     visibility: data.visibility || 'public',
+    sponsor_name: data.sponsor_name || null,
+    sponsor_logo_url: data.sponsor_logo_url || null,
+    sponsor_tagline: data.sponsor_tagline || null,
     winners_announced: false,
     concluded_at: status === 'concluded' ? new Date() : null,
     created_at: new Date(),
@@ -291,6 +294,9 @@ const CONTEST_MUTABLE_FIELDS = new Set([
   'prizes',
   'status',
   'visibility',
+  'sponsor_name',
+  'sponsor_logo_url',
+  'sponsor_tagline',
 ])
 
 async function updateContest(contestId, updates = {}) {

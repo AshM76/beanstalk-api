@@ -29,6 +29,9 @@ async function createContest(req, res) {
       max_participants,
       visibility,
       status,
+      sponsor_name,
+      sponsor_logo_url,
+      sponsor_tagline,
     } = req.body
 
     // Validate required fields
@@ -54,6 +57,10 @@ async function createContest(req, res) {
       prizes: prizes || [],
       max_participants,
       visibility: visibility || 'public',
+      // Sponsor branding (all optional)
+      ...(sponsor_name ? { sponsor_name } : {}),
+      ...(sponsor_logo_url ? { sponsor_logo_url } : {}),
+      ...(sponsor_tagline ? { sponsor_tagline } : {}),
       // Pass through if provided; service defaults to 'draft' otherwise and
       // rejects unknown values.
       ...(status ? { status } : {}),
@@ -67,6 +74,9 @@ async function createContest(req, res) {
       status: contest.status,
       age_groups: contest.age_groups,
       starting_balance: contest.starting_balance,
+      sponsor_name: contest.sponsor_name || null,
+      sponsor_logo_url: contest.sponsor_logo_url || null,
+      sponsor_tagline: contest.sponsor_tagline || null,
       created_at: contest.created_at,
     })
   } catch (error) {
@@ -111,6 +121,9 @@ async function listContests(req, res) {
         participants: c.current_participants,
         max_participants: c.max_participants,
         starting_balance: c.starting_balance,
+        sponsor_name: c.sponsor_name || null,
+        sponsor_logo_url: c.sponsor_logo_url || null,
+        sponsor_tagline: c.sponsor_tagline || null,
       })),
     })
   } catch (error) {
@@ -153,6 +166,9 @@ async function getContest(req, res) {
       max_participants: contest.max_participants,
       prizes: contest.prizes,
       visibility: contest.visibility,
+      sponsor_name: contest.sponsor_name || null,
+      sponsor_logo_url: contest.sponsor_logo_url || null,
+      sponsor_tagline: contest.sponsor_tagline || null,
     })
   } catch (error) {
     console.error('Contest fetch error:', error)

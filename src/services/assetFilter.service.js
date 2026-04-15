@@ -41,7 +41,7 @@ const isAssetAllowed = async (symbol, challengeRules = {}) => {
         }
 
         // ── Crypto ────────────────────────────────────────────
-        if (asset.asset_class === 'crypto') {
+        if ((asset.asset_class || asset.class) === 'crypto') {
             if (!challengeRules.crypto_allowed) {
                 return { allowed: false, reason: 'Crypto not allowed in this challenge' }
             }
@@ -50,7 +50,7 @@ const isAssetAllowed = async (symbol, challengeRules = {}) => {
         }
 
         // ── US Equities ───────────────────────────────────────
-        if (asset.asset_class === 'us_equity') {
+        if ((asset.asset_class || asset.class) === 'us_equity') {
             // Exchange check
             if (!ALLOWED_EXCHANGES.includes(asset.exchange)) {
                 return { allowed: false, reason: `Exchange ${asset.exchange} not supported` }

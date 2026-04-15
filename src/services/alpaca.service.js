@@ -24,12 +24,21 @@ const getPrice = async (symbol) => {
 // ── Current prices for multiple symbols (batch) ───────────────
 const getPrices = async (symbols) => {
     try {
+        // alpaca.getLatestBars returns a Map keyed by symbol — NOT a plain
+        // object — so Object.entries was silently returning [] and this
+        // endpoint was shipping empty responses. Iterate the Map directly.
         const bars = await alpaca.getLatestBars(symbols)
-        return Object.entries(bars).map(([symbol, bar]) => ({
-            symbol,
-            price: bar.ClosePrice,
-            timestamp: bar.Timestamp,
-        }))
+        const out = []
+        const entries = bars instanceof Map ? bars.entries() : Object.entries(bars || {})
+        for (const [symbol, bar] of entries) {
+            if (!bar) continue
+            out.push({
+                symbol,
+                price: bar.ClosePrice,
+                timestamp: bar.Timestamp,
+            })
+        }
+        return out
     } catch (error) {
         throw new Error(`Batch price fetch failed: ${error.message}`)
     }
@@ -49,12 +58,28 @@ const searchAssets = async (query) => {
     try {
         const assets = await alpaca.getAssets({ status: 'active' })
         const q = query.toUpperCase()
-        return assets
-            .filter(a =>
-                a.tradable &&
-                (a.symbol.includes(q) || a.name.toUpperCase().includes(q))
-            )
-            .slice(0, 20)
+        const matches = assets.filter(a =>
+            a.tradable &&
+            (a.symbol.includes(q) || a.name.toUpperCase().includes(q))
+        )
+
+        // Sort so exact symbol matches come first, then symbol-starts-with,
+        // then symbol-contains, then name-only matches. Without this, a
+        // short query like "MU" was buried under thousands of names
+        // containing "MUNICIPAL" / "CUMULATIVE" / "MULTIFACTOR" etc.
+        matches.sort((a, b) => {
+            const aS = a.symbol.toUpperCase()
+            const bS = b.symbol.toUpperCase()
+            const rank = (s) => {
+                if (s === q) return 0          // exact symbol match
+                if (s.startsWith(q)) return 1  // symbol starts with query
+                if (s.includes(q)) return 2    // symbol contains query
+                return 3                       // name-only match
+            }
+            return rank(aS) - rank(bS)
+        })
+
+        return matches.slice(0, 20)
     } catch (error) {
         throw new Error(`Asset search failed: ${error.message}`)
     }

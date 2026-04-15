@@ -135,7 +135,7 @@ async function getPortfolio(req, res) {
 async function executeTrade(req, res) {
   try {
     const { userId } = req.params
-    const { action, symbol, quantity, portfolio_id, contest_id } = req.body
+    const { action, symbol, quantity, portfolio_id, contest_id, price: clientPrice } = req.body
 
     if (req.user.user_id !== userId && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Access denied' })
@@ -160,15 +160,33 @@ async function executeTrade(req, res) {
       return res.status(error.status).json({ error: error.message })
     }
 
-    // Check market hours
-    const marketClock = await alpacaService.getMarketClock()
-    if (!marketClock.is_open) {
-      return res.status(400).json({ error: 'Market is closed. Trading is only allowed during market hours (9:30 AM - 4:00 PM ET)' })
-    }
+    // In test/dev mode the mobile app is the source of truth for prices:
+    // it displays mock prices from a static catalog and has no Alpaca
+    // plumbing of its own, so fetching a live Alpaca price server-side
+    // would leave avg cost and UI current price out of sync (e.g. AAPL
+    // shown as $182.63 but booked at Alpaca's live ~$265 → bogus -31%
+    // return). Market-hours check is also bypassed so paper trading works
+    // any time the user opens the app in dev.
+    //
+    // In prod we keep Alpaca as the authoritative price source and ignore
+    // the client-supplied price entirely to prevent clients from
+    // manipulating fills.
+    const isTestMode = process.env.BEANSTALK_ENVIRONMENT === 'test'
 
-    // Get current price from Alpaca
-    const currentPriceData = await alpacaService.getPrice(symbol)
-    const tradePrice = currentPriceData.price
+    let tradePrice
+    if (isTestMode && typeof clientPrice === 'number' && clientPrice > 0) {
+      tradePrice = clientPrice
+    } else {
+      // Check market hours
+      const marketClock = await alpacaService.getMarketClock()
+      if (!marketClock.is_open) {
+        return res.status(400).json({ error: 'Market is closed. Trading is only allowed during market hours (9:30 AM - 4:00 PM ET)' })
+      }
+
+      // Get current price from Alpaca
+      const currentPriceData = await alpacaService.getPrice(symbol)
+      tradePrice = currentPriceData.price
+    }
 
     let transaction
     if (action === 'buy') {
