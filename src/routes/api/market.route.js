@@ -9,7 +9,7 @@ const {
     checkAsset,
     marketClock,
     getCryptoTop20,
-} = require('../controllers/api/market/market.controller')
+} = require('../../controllers/api/market/market.controller')
 
 // All market routes require a valid JWT
 router.use(auth)

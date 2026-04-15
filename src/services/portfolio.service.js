@@ -1,9 +1,126 @@
 /**
  * Portfolio Service
  * Handles portfolio operations: creation, trading, valuation, performance tracking
+ *
+ * Persistence: Google BigQuery.
+ *   Tables (see migrations/005_add_portfolio_tables.sql):
+ *     - `${dataset}.portfolio`             (one row per portfolio; positions embedded as REPEATED RECORD)
+ *     - `${dataset}.portfolio_transaction` (one row per buy/sell/dividend/deposit/withdrawal)
+ *
+ * All queries are parameterized to avoid SQL injection. The `positions` array is
+ * written as a single struct-array parameter; because BigQuery's UPDATE DML cannot
+ * append to a REPEATED field using parameters alone, we replace the entire array
+ * on every portfolio mutation. This is consistent with how the service layer
+ * reads a portfolio, mutates in memory, then writes it back.
  */
 
 const { v4: uuidv4 } = require('uuid')
+const { BigQuery } = require('@google-cloud/bigquery')
+
+const {
+  BEANSTALK_GCP_BIGQUERY_PROJECTID,
+  BEANSTALK_GCP_BIGQUERY_DATASETID,
+} = process.env
+
+const keyFilename = './src/GoogleCloudPlatform/beanstalk-app-13d3f9f5267b.json'
+const bigquery = new BigQuery({
+  projectId: BEANSTALK_GCP_BIGQUERY_PROJECTID,
+  keyFilename,
+})
+
+const DATASET = BEANSTALK_GCP_BIGQUERY_DATASETID
+const PORTFOLIO_TABLE = `\`${BEANSTALK_GCP_BIGQUERY_PROJECTID}.${DATASET}.portfolio\``
+const TRANSACTION_TABLE = `\`${BEANSTALK_GCP_BIGQUERY_PROJECTID}.${DATASET}.portfolio_transaction\``
+
+// BigQuery DATETIME expects 'YYYY-MM-DD HH:MM:SS[.ffffff]' (no TZ). Convert JS Date.
+function toBqDatetime(value) {
+  if (value === null || value === undefined) return null
+  const d = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(d.getTime())) return null
+  // Use UTC ISO then strip the 'T' and trailing 'Z'
+  return d.toISOString().replace('T', ' ').replace('Z', '')
+}
+
+// Map a portfolio object (with JS Dates) to BigQuery-friendly row shape.
+function portfolioToRow(p) {
+  return {
+    portfolio_id: p.portfolio_id,
+    user_id: p.user_id,
+    portfolio_type: p.portfolio_type,
+    contest_id: p.contest_id || null,
+    starting_balance: p.starting_balance,
+    current_cash_balance: p.current_cash_balance,
+    total_invested: p.total_invested ?? 0,
+    total_position_value: p.total_position_value ?? 0,
+    total_portfolio_value: p.total_portfolio_value,
+    total_return_amount: p.total_return_amount ?? 0,
+    total_return_percent: p.total_return_percent ?? 0,
+    daily_return_percent: p.daily_return_percent ?? 0,
+    highest_portfolio_value: p.highest_portfolio_value ?? p.starting_balance,
+    lowest_portfolio_value: p.lowest_portfolio_value ?? p.starting_balance,
+    positions: (p.positions || []).map(pos => ({
+      position_id: pos.position_id,
+      symbol: pos.symbol,
+      quantity: pos.quantity,
+      purchase_price: pos.purchase_price,
+      purchase_date: toBqDatetime(pos.purchase_date),
+      current_price: pos.current_price ?? pos.purchase_price,
+      current_value: pos.current_value ?? pos.quantity * pos.purchase_price,
+      unrealized_gain_loss: pos.unrealized_gain_loss ?? 0,
+      unrealized_gain_loss_percent: pos.unrealized_gain_loss_percent ?? 0,
+      updated_at: toBqDatetime(pos.updated_at || new Date()),
+    })),
+    position_count: p.position_count ?? (p.positions || []).length,
+    created_at: toBqDatetime(p.created_at),
+    updated_at: toBqDatetime(p.updated_at),
+    last_price_update: toBqDatetime(p.last_price_update),
+  }
+}
+
+// Normalize a row read from BigQuery back to JS objects (BigQuery returns
+// DATETIME as { value: 'YYYY-MM-DD HH:MM:SS' } objects).
+function rowToPortfolio(row) {
+  if (!row) return null
+  const toDate = v => {
+    if (v === null || v === undefined) return null
+    if (v instanceof Date) return v
+    if (typeof v === 'object' && v.value) return new Date(v.value.replace(' ', 'T') + 'Z')
+    return new Date(v)
+  }
+  const toNum = v => (v === null || v === undefined ? null : Number(v))
+  return {
+    portfolio_id: row.portfolio_id,
+    user_id: row.user_id,
+    portfolio_type: row.portfolio_type,
+    contest_id: row.contest_id || null,
+    starting_balance: toNum(row.starting_balance),
+    current_cash_balance: toNum(row.current_cash_balance),
+    total_invested: toNum(row.total_invested),
+    total_position_value: toNum(row.total_position_value),
+    total_portfolio_value: toNum(row.total_portfolio_value),
+    total_return_amount: toNum(row.total_return_amount),
+    total_return_percent: toNum(row.total_return_percent),
+    daily_return_percent: toNum(row.daily_return_percent),
+    highest_portfolio_value: toNum(row.highest_portfolio_value),
+    lowest_portfolio_value: toNum(row.lowest_portfolio_value),
+    positions: (row.positions || []).map(pos => ({
+      position_id: pos.position_id,
+      symbol: pos.symbol,
+      quantity: toNum(pos.quantity),
+      purchase_price: toNum(pos.purchase_price),
+      purchase_date: toDate(pos.purchase_date),
+      current_price: toNum(pos.current_price),
+      current_value: toNum(pos.current_value),
+      unrealized_gain_loss: toNum(pos.unrealized_gain_loss),
+      unrealized_gain_loss_percent: toNum(pos.unrealized_gain_loss_percent),
+      updated_at: toDate(pos.updated_at),
+    })),
+    position_count: row.position_count ?? 0,
+    created_at: toDate(row.created_at),
+    updated_at: toDate(row.updated_at),
+    last_price_update: toDate(row.last_price_update),
+  }
+}
 
 /**
  * Create a new portfolio for a user
@@ -14,6 +131,22 @@ const { v4: uuidv4 } = require('uuid')
  * @returns {Promise<object>} Created portfolio
  */
 async function createPortfolio(userId, startingBalance, portfolioType = 'main', contestId = null) {
+  // Uniqueness guard: BigQuery has no DB-level uniqueness constraints, so enforce
+  // at the app layer. A user must have at most one 'main' portfolio, and at most
+  // one portfolio per (user, contest_id) pair. Return the existing row rather
+  // than inserting a duplicate — this makes the call idempotent, which is what
+  // the contest-join flow and the lazy-create-on-first-fetch flow both want.
+  if (portfolioType === 'main') {
+    const existing = await fetchUserMainPortfolioFromDatabase(userId)
+    if (existing) return existing
+  } else if (portfolioType === 'contest') {
+    if (!contestId) {
+      throw new Error('contestId is required when creating a contest portfolio')
+    }
+    const existing = await fetchUserContestPortfolioFromDatabase(userId, contestId)
+    if (existing) return existing
+  }
+
   const portfolio = {
     portfolio_id: uuidv4(),
     user_id: userId,
@@ -75,6 +208,35 @@ async function getUserMainPortfolio(userId) {
     return portfolio
   } catch (error) {
     console.error('Error fetching user main portfolio:', error)
+    throw error
+  }
+}
+
+/**
+ * Get a user's contest portfolio for a specific contest
+ * @param {string} userId - User ID
+ * @param {string} contestId - Contest ID
+ * @returns {Promise<object|null>} Contest portfolio, or null if user has not joined
+ */
+async function getUserContestPortfolio(userId, contestId) {
+  try {
+    return await fetchUserContestPortfolioFromDatabase(userId, contestId)
+  } catch (error) {
+    console.error('Error fetching user contest portfolio:', error)
+    throw error
+  }
+}
+
+/**
+ * List every portfolio for a user (main + any contests they've joined)
+ * @param {string} userId - User ID
+ * @returns {Promise<array>} Portfolios
+ */
+async function getUserPortfolios(userId) {
+  try {
+    return await fetchUserPortfoliosFromDatabase(userId)
+  } catch (error) {
+    console.error('Error fetching user portfolios:', error)
     throw error
   }
 }
@@ -351,44 +513,268 @@ async function calculatePerformanceMetrics(portfolioId) {
   return metrics
 }
 
-// Database helper functions (placeholders - implement with BigQuery client)
+// ─────────────────────────────────────────────────────────────
+// BigQuery persistence layer
+// ─────────────────────────────────────────────────────────────
+
+// Shared insert/query helpers
+async function runQuery(query, params = {}, types = {}) {
+  const [rows] = await bigquery.query({
+    query,
+    params,
+    types,
+    location: 'US',
+    parameterMode: 'named',
+  })
+  return rows
+}
+
+// BigQuery INSERT DML supports struct/array params, which we need for `positions`.
+// Streaming insert (bigquery.table(...).insert) would also work but does not
+// expose DML transaction semantics; DML is preferred for consistency with updates.
 async function savePortfolioToDatabase(portfolio) {
-  // TODO: Implement BigQuery insert
+  const row = portfolioToRow(portfolio)
+  const query = `
+    INSERT INTO ${PORTFOLIO_TABLE} (
+      portfolio_id, user_id, portfolio_type, contest_id,
+      starting_balance, current_cash_balance,
+      total_invested, total_position_value, total_portfolio_value,
+      total_return_amount, total_return_percent, daily_return_percent,
+      highest_portfolio_value, lowest_portfolio_value,
+      positions, position_count,
+      created_at, updated_at, last_price_update
+    ) VALUES (
+      @portfolio_id, @user_id, @portfolio_type, @contest_id,
+      @starting_balance, @current_cash_balance,
+      @total_invested, @total_position_value, @total_portfolio_value,
+      @total_return_amount, @total_return_percent, @daily_return_percent,
+      @highest_portfolio_value, @lowest_portfolio_value,
+      @positions, @position_count,
+      DATETIME(@created_at), DATETIME(@updated_at),
+      IF(@last_price_update IS NULL, NULL, DATETIME(@last_price_update))
+    )
+  `
+  const positionType = {
+    type: 'ARRAY',
+    arrayType: {
+      type: 'STRUCT',
+      structTypes: [
+        { name: 'position_id', type: { type: 'STRING' } },
+        { name: 'symbol', type: { type: 'STRING' } },
+        { name: 'quantity', type: { type: 'NUMERIC' } },
+        { name: 'purchase_price', type: { type: 'NUMERIC' } },
+        { name: 'purchase_date', type: { type: 'DATETIME' } },
+        { name: 'current_price', type: { type: 'NUMERIC' } },
+        { name: 'current_value', type: { type: 'NUMERIC' } },
+        { name: 'unrealized_gain_loss', type: { type: 'NUMERIC' } },
+        { name: 'unrealized_gain_loss_percent', type: { type: 'NUMERIC' } },
+        { name: 'updated_at', type: { type: 'DATETIME' } },
+      ],
+    },
+  }
+  await runQuery(query, row, { positions: positionType, contest_id: 'STRING', last_price_update: 'STRING' })
   return portfolio
 }
 
 async function fetchPortfolioFromDatabase(portfolioId) {
-  // TODO: Implement BigQuery query
-  return null
+  const query = `
+    SELECT *
+    FROM ${PORTFOLIO_TABLE}
+    WHERE portfolio_id = @portfolio_id
+    LIMIT 1
+  `
+  const rows = await runQuery(query, { portfolio_id: portfolioId })
+  return rows.length > 0 ? rowToPortfolio(rows[0]) : null
 }
 
 async function fetchUserMainPortfolioFromDatabase(userId) {
-  // TODO: Implement BigQuery query
-  return null
+  const query = `
+    SELECT *
+    FROM ${PORTFOLIO_TABLE}
+    WHERE user_id = @user_id AND portfolio_type = 'main'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `
+  const rows = await runQuery(query, { user_id: userId })
+  return rows.length > 0 ? rowToPortfolio(rows[0]) : null
+}
+
+async function fetchUserContestPortfolioFromDatabase(userId, contestId) {
+  const query = `
+    SELECT *
+    FROM ${PORTFOLIO_TABLE}
+    WHERE user_id = @user_id AND contest_id = @contest_id AND portfolio_type = 'contest'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `
+  const rows = await runQuery(query, { user_id: userId, contest_id: contestId })
+  return rows.length > 0 ? rowToPortfolio(rows[0]) : null
+}
+
+async function fetchUserPortfoliosFromDatabase(userId) {
+  const query = `
+    SELECT *
+    FROM ${PORTFOLIO_TABLE}
+    WHERE user_id = @user_id
+    ORDER BY portfolio_type DESC, created_at ASC
+  `
+  const rows = await runQuery(query, { user_id: userId })
+  return rows.map(rowToPortfolio)
 }
 
 async function saveTransactionToDatabase(transaction) {
-  // TODO: Implement BigQuery insert
+  const query = `
+    INSERT INTO ${TRANSACTION_TABLE} (
+      transaction_id, portfolio_id, user_id, transaction_type,
+      symbol, quantity, price, amount,
+      contest_id, contest_entry_fee, prize_amount,
+      transaction_date, settlement_date, created_at, status, notes
+    ) VALUES (
+      @transaction_id, @portfolio_id, @user_id, @transaction_type,
+      @symbol, @quantity, @price, @amount,
+      @contest_id, @contest_entry_fee, @prize_amount,
+      DATETIME(@transaction_date),
+      IF(@settlement_date IS NULL, NULL, DATETIME(@settlement_date)),
+      DATETIME(@created_at),
+      @status, @notes
+    )
+  `
+  const params = {
+    transaction_id: transaction.transaction_id,
+    portfolio_id: transaction.portfolio_id,
+    user_id: transaction.user_id,
+    transaction_type: transaction.transaction_type,
+    symbol: transaction.symbol || null,
+    quantity: transaction.quantity ?? null,
+    price: transaction.price ?? null,
+    amount: transaction.amount,
+    contest_id: transaction.contest_id || null,
+    contest_entry_fee: transaction.contest_entry_fee ?? null,
+    prize_amount: transaction.prize_amount ?? null,
+    transaction_date: toBqDatetime(transaction.transaction_date),
+    settlement_date: toBqDatetime(transaction.settlement_date),
+    created_at: toBqDatetime(transaction.created_at),
+    status: transaction.status || 'completed',
+    notes: transaction.notes || null,
+  }
+  const types = {
+    symbol: 'STRING',
+    quantity: 'NUMERIC',
+    price: 'NUMERIC',
+    contest_id: 'STRING',
+    contest_entry_fee: 'NUMERIC',
+    prize_amount: 'NUMERIC',
+    settlement_date: 'STRING',
+    notes: 'STRING',
+  }
+  await runQuery(query, params, types)
   return transaction
 }
 
 async function updatePortfolioInDatabase(portfolio) {
-  // TODO: Implement BigQuery update
+  // Full-row update: BigQuery can't append to REPEATED fields via params, so we
+  // always replace the entire positions array and recomputed aggregates.
+  const row = portfolioToRow(portfolio)
+  const query = `
+    UPDATE ${PORTFOLIO_TABLE}
+    SET
+      current_cash_balance      = @current_cash_balance,
+      total_invested            = @total_invested,
+      total_position_value      = @total_position_value,
+      total_portfolio_value     = @total_portfolio_value,
+      total_return_amount       = @total_return_amount,
+      total_return_percent      = @total_return_percent,
+      daily_return_percent      = @daily_return_percent,
+      highest_portfolio_value   = @highest_portfolio_value,
+      lowest_portfolio_value    = @lowest_portfolio_value,
+      positions                 = @positions,
+      position_count            = @position_count,
+      updated_at                = DATETIME(@updated_at),
+      last_price_update         = IF(@last_price_update IS NULL, NULL, DATETIME(@last_price_update))
+    WHERE portfolio_id = @portfolio_id
+  `
+  const positionType = {
+    type: 'ARRAY',
+    arrayType: {
+      type: 'STRUCT',
+      structTypes: [
+        { name: 'position_id', type: { type: 'STRING' } },
+        { name: 'symbol', type: { type: 'STRING' } },
+        { name: 'quantity', type: { type: 'NUMERIC' } },
+        { name: 'purchase_price', type: { type: 'NUMERIC' } },
+        { name: 'purchase_date', type: { type: 'DATETIME' } },
+        { name: 'current_price', type: { type: 'NUMERIC' } },
+        { name: 'current_value', type: { type: 'NUMERIC' } },
+        { name: 'unrealized_gain_loss', type: { type: 'NUMERIC' } },
+        { name: 'unrealized_gain_loss_percent', type: { type: 'NUMERIC' } },
+        { name: 'updated_at', type: { type: 'DATETIME' } },
+      ],
+    },
+  }
+  await runQuery(query, row, { positions: positionType, last_price_update: 'STRING' })
   return portfolio
 }
 
-async function fetchPortfolioTransactionsFromDatabase(portfolioId, options) {
-  // TODO: Implement BigQuery query with filters
-  return []
+async function fetchPortfolioTransactionsFromDatabase(portfolioId, options = {}) {
+  const limit = Math.min(Math.max(parseInt(options.limit, 10) || 50, 1), 500)
+  const offset = Math.max(parseInt(options.offset, 10) || 0, 0)
+  const typeFilter = options.type || null
+
+  let query = `
+    SELECT *
+    FROM ${TRANSACTION_TABLE}
+    WHERE portfolio_id = @portfolio_id
+  `
+  if (typeFilter) {
+    query += ` AND transaction_type = @transaction_type`
+  }
+  query += `
+    ORDER BY transaction_date DESC
+    LIMIT @limit OFFSET @offset
+  `
+
+  const params = {
+    portfolio_id: portfolioId,
+    limit,
+    offset,
+    ...(typeFilter ? { transaction_type: typeFilter } : {}),
+  }
+  const types = {
+    limit: 'INT64',
+    offset: 'INT64',
+  }
+
+  const rows = await runQuery(query, params, types)
+  return rows.map(r => ({
+    ...r,
+    transaction_date: r.transaction_date && r.transaction_date.value
+      ? new Date(r.transaction_date.value.replace(' ', 'T') + 'Z')
+      : r.transaction_date,
+    settlement_date: r.settlement_date && r.settlement_date.value
+      ? new Date(r.settlement_date.value.replace(' ', 'T') + 'Z')
+      : r.settlement_date,
+    created_at: r.created_at && r.created_at.value
+      ? new Date(r.created_at.value.replace(' ', 'T') + 'Z')
+      : r.created_at,
+  }))
 }
 
 module.exports = {
   createPortfolio,
   getPortfolio,
   getUserMainPortfolio,
+  getUserContestPortfolio,
+  getUserPortfolios,
   executeBuyTrade,
   executeSellTrade,
   updatePortfolioPrices,
   getPortfolioTransactions,
   calculatePerformanceMetrics,
+}
+
+// Dev/test bypass: when running without GCP credentials, back the service with
+// an in-memory store so the mobile app can be exercised end-to-end.
+if (process.env.BEANSTALK_ENVIRONMENT === 'test') {
+  module.exports = require('./_memory_store').portfolio
+  console.log('[Beanstalk] :: portfolio.service → in-memory store (test mode)')
 }

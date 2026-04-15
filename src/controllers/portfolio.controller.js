@@ -3,47 +3,105 @@
  * Handles portfolio API requests
  */
 
-const portfolioService = require('../../services/portfolio.service')
-const alpacaService = require('../../services/alpaca.service')
+const portfolioService = require('../services/portfolio.service')
+const alpacaService = require('../services/alpaca.service')
+
+/**
+ * Resolve the portfolio a trade/query should operate on.
+ *
+ * Precedence (first non-null wins):
+ *   1. explicit portfolio_id — must belong to this user
+ *   2. contest_id            — must be a contest the user has joined
+ *   3. default                — the user's main portfolio (lazy-created if missing)
+ *
+ * Returns `{ portfolio, error }`. `error` is a {status, message} object when the
+ * caller should bail; otherwise `portfolio` is the resolved portfolio object.
+ */
+async function resolveUserPortfolio(userId, { portfolio_id, contest_id } = {}) {
+  if (portfolio_id) {
+    const p = await portfolioService.getPortfolio(portfolio_id)
+    if (!p) return { error: { status: 404, message: 'Portfolio not found' } }
+    if (p.user_id !== userId) {
+      return { error: { status: 403, message: 'Portfolio does not belong to this user' } }
+    }
+    return { portfolio: p }
+  }
+
+  if (contest_id) {
+    const p = await portfolioService.getUserContestPortfolio(userId, contest_id)
+    if (!p) {
+      return {
+        error: {
+          status: 404,
+          message: 'No contest portfolio found for this user. Join the contest first.',
+        },
+      }
+    }
+    return { portfolio: p }
+  }
+
+  let main = await portfolioService.getUserMainPortfolio(userId)
+  if (!main) {
+    // Lazy-create main on first access; createPortfolio is idempotent per the
+    // uniqueness guard, so concurrent calls won't duplicate.
+    main = await portfolioService.createPortfolio(userId, 10000, 'main')
+  }
+  return { portfolio: main }
+}
 
 /**
  * GET /api/portfolio/:userId
  * Get user's main portfolio
  */
+/**
+ * GET /api/portfolio/:userId
+ * GET /api/portfolio/:userId?contest_id=<id>
+ *
+ * Without contest_id: returns the user's main portfolio. Lazy-creates a
+ * $10,000 main portfolio on first access.
+ *
+ * With contest_id: returns the user's portfolio for that specific contest.
+ * 404s if the user has not joined the contest (no lazy-create here — a
+ * contest portfolio must be seeded via POST /api/contests/:id/join so that
+ * the participant row is also written).
+ */
 async function getPortfolio(req, res) {
   try {
     const { userId } = req.params
+    const { contest_id: contestId } = req.query
 
     if (req.user.user_id !== userId && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Access denied' })
     }
 
-    const portfolio = await portfolioService.getUserMainPortfolio(userId)
+    let portfolio
 
-    if (!portfolio) {
-      // Create main portfolio if it doesn't exist
-      const newPortfolio = await portfolioService.createPortfolio(userId, 10000, 'main')
-      return res.json({
-        portfolio_id: newPortfolio.portfolio_id,
-        user_id: newPortfolio.user_id,
-        starting_balance: newPortfolio.starting_balance,
-        current_balance: newPortfolio.current_cash_balance,
-        invested_value: newPortfolio.total_position_value,
-        total_value: newPortfolio.total_portfolio_value,
-        total_return_percent: newPortfolio.total_return_percent,
-        total_return_amount: newPortfolio.total_return_amount,
-        positions: newPortfolio.positions,
-        metrics: { daily_return: 0, weekly_return: 0, monthly_return: 0 },
-        updated_at: newPortfolio.updated_at,
-      })
+    if (contestId) {
+      portfolio = await portfolioService.getUserContestPortfolio(userId, contestId)
+      if (!portfolio) {
+        return res.status(404).json({
+          error: 'No contest portfolio found for this user. Join the contest first.',
+        })
+      }
+    } else {
+      portfolio = await portfolioService.getUserMainPortfolio(userId)
+      if (!portfolio) {
+        // Lazy-create main portfolio on first access. createPortfolio is
+        // idempotent (see uniqueness guard in portfolio.service.js), so
+        // concurrent first-fetches won't duplicate.
+        portfolio = await portfolioService.createPortfolio(userId, 10000, 'main')
+      }
     }
 
-    // Calculate performance metrics
+    // Performance metrics come from the same source as the portfolio; for a
+    // freshly-created main portfolio they're all zeros, which is fine.
     const metrics = await portfolioService.calculatePerformanceMetrics(portfolio.portfolio_id)
 
     res.json({
       portfolio_id: portfolio.portfolio_id,
       user_id: portfolio.user_id,
+      portfolio_type: portfolio.portfolio_type,
+      contest_id: portfolio.contest_id || null,
       starting_balance: portfolio.starting_balance,
       current_balance: portfolio.current_cash_balance,
       invested_value: portfolio.total_position_value,
@@ -51,7 +109,7 @@ async function getPortfolio(req, res) {
       total_return_percent: portfolio.total_return_percent,
       total_return_amount: portfolio.total_return_amount,
       positions: portfolio.positions,
-      metrics: metrics,
+      metrics,
       updated_at: portfolio.updated_at,
     })
   } catch (error) {
@@ -62,12 +120,22 @@ async function getPortfolio(req, res) {
 
 /**
  * POST /api/portfolio/:userId/trade
- * Execute buy or sell trade
+ * Execute buy or sell trade.
+ *
+ * Body:
+ *   action:       'buy' | 'sell'       (required)
+ *   symbol:       string                (required)
+ *   quantity:     number                (required, > 0)
+ *   portfolio_id: string                (optional — target a specific portfolio)
+ *   contest_id:   string                (optional — target the user's portfolio for this contest)
+ *
+ * If neither portfolio_id nor contest_id is supplied, the trade runs against
+ * the user's main portfolio (lazy-created at $10,000 if missing).
  */
 async function executeTrade(req, res) {
   try {
     const { userId } = req.params
-    const { action, symbol, quantity, price } = req.body
+    const { action, symbol, quantity, portfolio_id, contest_id } = req.body
 
     if (req.user.user_id !== userId && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Access denied' })
@@ -86,11 +154,10 @@ async function executeTrade(req, res) {
       return res.status(400).json({ error: 'Quantity must be positive' })
     }
 
-    // Get user's portfolio
-    const portfolio = await portfolioService.getUserMainPortfolio(userId)
-
-    if (!portfolio) {
-      return res.status(404).json({ error: 'Portfolio not found' })
+    // Resolve target portfolio (main by default, or scoped to contest/portfolio_id)
+    const { portfolio, error } = await resolveUserPortfolio(userId, { portfolio_id, contest_id })
+    if (error) {
+      return res.status(error.status).json({ error: error.message })
     }
 
     // Check market hours
@@ -101,13 +168,9 @@ async function executeTrade(req, res) {
 
     // Get current price from Alpaca
     const currentPriceData = await alpacaService.getPrice(symbol)
-    const currentPrice = currentPriceData.price
-
-    // Use current price for trade execution
-    const tradePrice = currentPrice
+    const tradePrice = currentPriceData.price
 
     let transaction
-
     if (action === 'buy') {
       transaction = await portfolioService.executeBuyTrade(portfolio.portfolio_id, symbol, quantity, tradePrice)
     } else {
@@ -124,6 +187,9 @@ async function executeTrade(req, res) {
       quantity: quantity,
       price: tradePrice,
       total_amount: transaction.amount,
+      portfolio_id: portfolio.portfolio_id,
+      portfolio_type: portfolio.portfolio_type,
+      contest_id: portfolio.contest_id || null,
       portfolio_updated: {
         cash_balance: updatedPortfolio.current_cash_balance,
         total_value: updatedPortfolio.total_portfolio_value,
@@ -148,16 +214,15 @@ async function executeTrade(req, res) {
 async function getTransactions(req, res) {
   try {
     const { userId } = req.params
-    const { limit = 50, offset = 0, type } = req.query
+    const { limit = 50, offset = 0, type, portfolio_id, contest_id } = req.query
 
     if (req.user.user_id !== userId && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Access denied' })
     }
 
-    const portfolio = await portfolioService.getUserMainPortfolio(userId)
-
-    if (!portfolio) {
-      return res.status(404).json({ error: 'Portfolio not found' })
+    const { portfolio, error } = await resolveUserPortfolio(userId, { portfolio_id, contest_id })
+    if (error) {
+      return res.status(error.status).json({ error: error.message })
     }
 
     const options = {
@@ -169,6 +234,9 @@ async function getTransactions(req, res) {
     const transactions = await portfolioService.getPortfolioTransactions(portfolio.portfolio_id, options)
 
     res.json({
+      portfolio_id: portfolio.portfolio_id,
+      portfolio_type: portfolio.portfolio_type,
+      contest_id: portfolio.contest_id || null,
       count: transactions.length,
       transactions: transactions,
     })

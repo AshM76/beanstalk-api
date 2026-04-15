@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken')
-const { sendEmail } = require('../../services') // Reuse existing email service
+const { sendEmail } = require('./index') // Reuse existing email service
 
 /**
  * Age Verification Service

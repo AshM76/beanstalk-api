@@ -3,8 +3,8 @@
  * Handles contest API requests
  */
 
-const contestService = require('../../services/contest.service')
-const portfolioService = require('../../services/portfolio.service')
+const contestService = require('../services/contest.service')
+const portfolioService = require('../services/portfolio.service')
 
 /**
  * POST /api/contests
@@ -28,6 +28,7 @@ async function createContest(req, res) {
       prizes,
       max_participants,
       visibility,
+      status,
     } = req.body
 
     // Validate required fields
@@ -53,6 +54,9 @@ async function createContest(req, res) {
       prizes: prizes || [],
       max_participants,
       visibility: visibility || 'public',
+      // Pass through if provided; service defaults to 'draft' otherwise and
+      // rejects unknown values.
+      ...(status ? { status } : {}),
     }
 
     const contest = await contestService.createContest(req.user.user_id, contestData)
@@ -186,13 +190,34 @@ async function joinContest(req, res) {
       message: 'Successfully joined contest',
     })
   } catch (error) {
-    console.error('Contest join error:', error)
+    // Log full stack so unexpected failures are still diagnosable; previously
+    // we printed only `error` which stringified as "[object Object]" in some
+    // runtimes and hid the real cause behind a generic 500.
+    console.error('Contest join error:', {
+      message: error?.message,
+      stack: error?.stack,
+      contestId: req.params.contestId,
+      user_id: req.body?.user_id,
+      age_group: req.body?.age_group,
+    })
 
-    if (error.message.includes('not found') || error.message.includes('not eligible')) {
+    // Service-level validation errors are all thrown as plain Error with a
+    // human-readable message; surface those as 400 so the mobile app can show
+    // the real reason (registration closed, already joined, contest full,
+    // etc.) instead of a generic "Failed to join contest".
+    const userErrors = [
+      'not found',
+      'not eligible',
+      'registration has closed',
+      'not accepting participants',
+      'already joined',
+      'Contest is full',
+    ]
+    if (error.message && userErrors.some(needle => error.message.includes(needle))) {
       return res.status(400).json({ error: error.message })
     }
 
-    res.status(500).json({ error: 'Failed to join contest' })
+    res.status(500).json({ error: 'Failed to join contest', detail: error?.message })
   }
 }
 
@@ -244,7 +269,7 @@ async function getContestParticipants(req, res) {
     res.status(500).json({ error: 'Failed to fetch participants' })
   }
 }
- */
+
 async function getLeaderboard(req, res) {
   try {
     const { contestId } = req.params
@@ -297,11 +322,56 @@ async function concludeContest(req, res) {
   }
 }
 
+/**
+ * PUT /api/contests/:contestId
+ * Update mutable fields on a contest (status, dates, prizes, copy, caps).
+ * Admin / contest manager only. Immutable identity/audit/derived fields
+ * (contest_id, creator_id, created_at, current_participants,
+ * total_prize_pool, winners_announced) are ignored by the service.
+ */
+async function updateContest(req, res) {
+  try {
+    if (!['admin', 'contest_manager'].includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ error: 'Only admins and contest managers can update contests' })
+    }
+
+    const { contestId } = req.params
+    const updates = req.body || {}
+
+    // Normalize date fields so the service sees Date objects (same shape as
+    // createContest). Reject out-of-order windows before hitting the store.
+    if (updates.start_date) updates.start_date = new Date(updates.start_date)
+    if (updates.end_date) updates.end_date = new Date(updates.end_date)
+    if (updates.registration_deadline) {
+      updates.registration_deadline = new Date(updates.registration_deadline)
+    }
+    if (updates.start_date && updates.end_date && updates.start_date >= updates.end_date) {
+      return res.status(400).json({ error: 'start_date must be before end_date' })
+    }
+
+    const contest = await contestService.updateContest(contestId, updates)
+    if (!contest) return res.status(404).json({ error: 'Contest not found' })
+
+    res.json(contest)
+  } catch (error) {
+    console.error('Contest update error:', error)
+    // Validation errors from the service (e.g. invalid status) surface as 400.
+    if (error.message && error.message.startsWith('Invalid status')) {
+      return res.status(400).json({ error: error.message })
+    }
+    res.status(500).json({ error: 'Failed to update contest' })
+  }
+}
+
 module.exports = {
   createContest,
   listContests,
   getContest,
+  updateContest,
   joinContest,
   getLeaderboard,
   concludeContest,
+  getContestParticipants,
 }

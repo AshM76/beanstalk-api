@@ -5,7 +5,7 @@ const fs = require('fs')
 
 const app = require('./app')
 
-const GoogleCloudPlatform = require('./GoogleCloudPlatform/GCP-BigQuery-Beanstalk')
+const GoogleCloudPlatform = require('./GoogleCloudPlatform/GCP-BigQuery-Youkti')
 const ChatController = require('./controllers/api/chat/chat.controller')
 
 const DealsAutoProcess = require('./utils/deals_autoClosed')
@@ -23,7 +23,7 @@ app.listen(app.get('port'), () => {
 })
 
 console.log('[Beanstalk] :: Enviroment:', BEANSTALK_ENVIRONMENT) 
-if (BEANSTALK_ENVIRONMENT != 'test') {
+if (BEANSTALK_ENVIRONMENT == 'production') {
     // Htmls
     const httpsServer = https.createServer({
         key: fs.readFileSync('/etc/letsencrypt/live/beanstalk.app/privkey.pem'),
