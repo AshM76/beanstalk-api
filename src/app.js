@@ -29,6 +29,9 @@ app.use('/api', require('./routes/web/dispensaries.route'))  // course providers
 app.use('/api', require('./routes/web/stores.route'))
 app.use('/api', require('./routes/web/clinicians.route'))    // mentors
 
+// ── Routes: auth (in-memory / test mode) ──────────────────────
+app.use('/api', require('./routes/api/auth.route'))
+
 // ── Routes: shared ────────────────────────────────────────────
 app.use('/api', require('./routes/api/market.route'))        // Alpaca market data
 app.use('/api', require('./routes/api/roles.route'))

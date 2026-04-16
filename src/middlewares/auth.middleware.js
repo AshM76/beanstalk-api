@@ -6,10 +6,27 @@ function isAuth (req,res,next) {
     // from the URL (:userId param) or body is trusted as the acting user so
     // downstream controllers' `req.user.user_id === userId` checks pass.
     if (process.env.BEANSTALK_ENVIRONMENT === 'test') {
-        // Params aren't populated yet when this runs as upstream middleware
-        // (market.route.js applies router.use(auth) which fires for every
-        // /api/* request before the matching router extracts :userId). Parse
-        // the likely userId segment out of the raw URL as a fallback.
+        // If the client sent a real JWT (e.g. mobile app after login), decode
+        // it so req.user.user_id reflects the authenticated user rather than
+        // a URL-scraped fallback. Fall through to the legacy bypass only when
+        // no Authorization header is present (backward-compatible with curl).
+        if (req.headers.authorization) {
+            const token = req.headers.authorization.split(' ')[1]
+            if (token) {
+                return services.decodeToken(token)
+                    .then(userId => {
+                        req.user = { user_id: userId, role: 'admin', _devBypass: false }
+                        next()
+                    })
+                    .catch(() => {
+                        // Token invalid/expired — fall through to bypass
+                        req.user = { user_id: null, role: 'admin', _devBypass: true }
+                        next()
+                    })
+            }
+        }
+
+        // Legacy bypass: scrape userId from URL/body for unauthenticated calls
         const pathMatch = req.path.match(/\/(?:portfolio|contests?)\/([^/?]+)/)
         const fallbackUserId =
             req.params.userId ||
@@ -18,10 +35,6 @@ function isAuth (req,res,next) {
             (req.body && req.body.user_id) ||
             (pathMatch && pathMatch[1]) ||
             null
-        // Default to 'admin' role in test mode so admin-only endpoints
-        // (create/conclude contests, view participants) work without real
-        // RBAC wiring. Clients that need to exercise the user-level path can
-        // set ?role=user explicitly.
         const role = req.query.role === 'user' ? 'user' : 'admin'
         req.user = { user_id: fallbackUserId, role, _devBypass: true }
         return next()

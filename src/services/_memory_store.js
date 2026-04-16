@@ -12,6 +12,8 @@ const crypto = require('crypto')
 const uuidv4 = () => crypto.randomUUID()
 
 // Tables
+const users = new Map()             // user_id -> user object
+const usersByEmail = new Map()      // email (lowercase) -> user_id (index)
 const portfolios = new Map()        // portfolio_id -> portfolio
 const transactions = []             // flat list of transaction rows
 const contests = new Map()          // contest_id -> contest
@@ -485,4 +487,36 @@ module.exports = {
     concludeContest,
     getContestParticipants,
   },
+  users: {
+    createUser,
+    getUserByEmail,
+    getUserById,
+  },
+}
+
+// ── User helpers ────────────────────────────────────────────────
+
+function createUser(name, email, passwordHash) {
+  const user = {
+    user_id: uuidv4(),
+    name,
+    email: email.toLowerCase(),
+    password_hash: passwordHash,
+    avatar_url: null,
+    created_at: new Date(),
+  }
+  users.set(user.user_id, user)
+  usersByEmail.set(user.email, user.user_id)
+  return { user_id: user.user_id, name: user.name, email: user.email, avatar_url: user.avatar_url, created_at: user.created_at }
+}
+
+function getUserByEmail(email) {
+  const id = usersByEmail.get((email || '').toLowerCase())
+  return id ? users.get(id) || null : null
+}
+
+function getUserById(userId) {
+  const u = users.get(userId)
+  if (!u) return null
+  return { user_id: u.user_id, name: u.name, email: u.email, avatar_url: u.avatar_url, created_at: u.created_at }
 }
