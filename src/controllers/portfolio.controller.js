@@ -171,7 +171,7 @@ async function executeTrade(req, res) {
     // In prod we keep Alpaca as the authoritative price source and ignore
     // the client-supplied price entirely to prevent clients from
     // manipulating fills.
-    const isTestMode = process.env.BEANSTALK_ENVIRONMENT === 'test'
+    const isTestMode = ['test', 'demo'].includes(process.env.BEANSTALK_ENVIRONMENT)
 
     let tradePrice
     if (isTestMode && typeof clientPrice === 'number' && clientPrice > 0) {

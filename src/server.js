@@ -22,7 +22,15 @@ app.listen(app.get('port'), () => {
     console.log('[Beanstalk] :: API Version:', BEANSTALK_SERVER_VERSION)
 })
 
-console.log('[Beanstalk] :: Enviroment:', BEANSTALK_ENVIRONMENT) 
+console.log('[Beanstalk] :: Enviroment:', BEANSTALK_ENVIRONMENT)
+
+// Seed demo data in demo mode so the app launches with a rich environment.
+// 'demo' mode behaves like 'test' (in-memory store, auth bypass) but also
+// auto-populates users, contests, portfolios, and leaderboards on boot.
+if (BEANSTALK_ENVIRONMENT === 'demo') {
+    require('../scripts/seed-demo')().catch(err => console.error('[Seed] FAILED:', err.message))
+}
+
 if (BEANSTALK_ENVIRONMENT == 'production') {
     // Htmls
     const httpsServer = https.createServer({

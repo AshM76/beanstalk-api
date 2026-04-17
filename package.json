@@ -5,6 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
+    "start:demo": "BEANSTALK_ENVIRONMENT=demo node src/server.js",
+    "seed:demo": "node scripts/seed-demo.js",
     "dev": "nodemon src/server.js",
     "test": "jest"
   },

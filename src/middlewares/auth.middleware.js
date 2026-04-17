@@ -5,7 +5,7 @@ function isAuth (req,res,next) {
     // is running in test mode (no login flow on the client yet). The userId
     // from the URL (:userId param) or body is trusted as the acting user so
     // downstream controllers' `req.user.user_id === userId` checks pass.
-    if (process.env.BEANSTALK_ENVIRONMENT === 'test') {
+    if (['test', 'demo'].includes(process.env.BEANSTALK_ENVIRONMENT)) {
         // If the client sent a real JWT (e.g. mobile app after login), decode
         // it so req.user.user_id reflects the authenticated user rather than
         // a URL-scraped fallback. Fall through to the legacy bypass only when

@@ -774,7 +774,7 @@ module.exports = {
 
 // Dev/test bypass: when running without GCP credentials, back the service with
 // an in-memory store so the mobile app can be exercised end-to-end.
-if (process.env.BEANSTALK_ENVIRONMENT === 'test') {
+if (['test', 'demo'].includes(process.env.BEANSTALK_ENVIRONMENT)) {
   module.exports = require('./_memory_store').portfolio
   console.log('[Beanstalk] :: portfolio.service → in-memory store (test mode)')
 }

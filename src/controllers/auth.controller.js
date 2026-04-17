@@ -1,14 +1,13 @@
 /**
- * Auth controller for test/in-memory mode.
+ * Auth controller.
  *
- * Provides register, login, and profile endpoints that mirror the
- * production BigQuery-backed flow but store users in the in-memory
- * store so the mobile app can exercise a real auth flow without GCP.
+ * register / login / me — all routed through user.service, which picks
+ * BigQuery or the in-memory store based on BEANSTALK_ENVIRONMENT.
  */
 
 const bcrypt = require('bcryptjs')
 const { createToken } = require('../services')
-const store = require('../services/_memory_store')
+const userService = require('../services/user.service')
 
 const SALT_ROUNDS = 10
 
@@ -25,14 +24,18 @@ async function register(req, res) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' })
     }
 
-    // Check duplicate
-    const existing = store.users.getUserByEmail(email)
-    if (existing) {
-      return res.status(409).json({ error: 'An account with this email already exists' })
+    const hash = await bcrypt.hash(password, SALT_ROUNDS)
+
+    let user
+    try {
+      user = await userService.createUser(name, email, hash)
+    } catch (err) {
+      if (err.code === 'EMAIL_EXISTS') {
+        return res.status(409).json({ error: err.message })
+      }
+      throw err
     }
 
-    const hash = await bcrypt.hash(password, SALT_ROUNDS)
-    const user = store.users.createUser(name, email, hash)
     const token = createToken(user.user_id)
 
     res.status(201).json({
@@ -58,8 +61,8 @@ async function login(req, res) {
       return res.status(400).json({ error: 'Missing required fields: email, password' })
     }
 
-    // getUserByEmail returns the full record (including password_hash)
-    const user = store.users.getUserByEmail(email)
+    // getUserByEmail returns the auth shape including password_hash.
+    const user = await userService.getUserByEmail(email)
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' })
     }
@@ -68,6 +71,10 @@ async function login(req, res) {
     if (!valid) {
       return res.status(401).json({ error: 'Invalid email or password' })
     }
+
+    // Fire-and-forget audit write; await to keep the flow linear but errors
+    // are swallowed inside recordLogin so login still succeeds if BQ blips.
+    await userService.recordLogin(user.user_id)
 
     const token = createToken(user.user_id)
 
@@ -93,7 +100,7 @@ async function me(req, res) {
       return res.status(401).json({ error: 'Not authenticated' })
     }
 
-    const user = store.users.getUserById(userId)
+    const user = await userService.getUserById(userId)
     if (!user) {
       return res.status(404).json({ error: 'User not found' })
     }
