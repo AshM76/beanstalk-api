@@ -44,11 +44,23 @@ or crypto.
 
 ## How to run
 
-```bash
-# Dry run (shows intended changes, makes no writes):
-node scripts/migrate-008-add-asset-class.js --dry-run
+**Before you start: confirm Alpaca is healthy.** The audit step classifies
+every un-classified symbol via `classifyAsset`, which calls Alpaca. A
+degraded Alpaca produces `(fallback — classify failed)` entries in the
+output, which silently default to STOCK. Check
+<https://status.alpaca.markets/> before running. If the dry-run shows any
+fallback entries, **don't retry blindly** — investigate Alpaca's status
+first so you're not hammering a degraded API and producing more
+mis-classifications.
 
-# Apply:
+```bash
+# Dry run — save the output. The symbol → class map is the pre-apply
+# state of record; if anything goes sideways after apply, you'll want
+# it in hand.
+node scripts/migrate-008-add-asset-class.js --dry-run \
+  > migration-008-staging-dryrun.txt 2>&1
+
+# Review the file. If it's clean (no fallbacks, mode is what you expect):
 node scripts/migrate-008-add-asset-class.js
 ```
 
