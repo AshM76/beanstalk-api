@@ -14,6 +14,11 @@ const positionSchema = [
   { name: 'unrealized_gain_loss', type: 'NUMERIC' },
   { name: 'unrealized_gain_loss_percent', type: 'NUMERIC' },
   { name: 'updated_at', type: 'DATETIME' },
+  // Set at buy-time from Alpaca metadata via assetFilter.classifyAsset.
+  // Nullable to accommodate pre-migration rows; backfilled by
+  // scripts/migrate-008-add-asset-class.js. Canonical values:
+  // 'STOCK' | 'ETF' | 'CRYPTO'.
+  { name: 'asset_class', type: 'STRING' },
 ]
 
 const portfolioSchema = [

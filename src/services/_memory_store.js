@@ -8,6 +8,7 @@
  */
 
 const crypto = require('crypto')
+const { classifyAsset } = require('./assetFilter.service')
 
 const uuidv4 = () => crypto.randomUUID()
 
@@ -110,7 +111,13 @@ async function executeBuyTrade(portfolioId, symbol, quantity, price) {
     existing.current_price = price
     existing.current_value = totalShares * price
     existing.updated_at = new Date()
+    // Lazy-backfill asset_class on legacy in-memory positions. Matches
+    // the BQ store's behavior so the two codepaths stay interchangeable.
+    if (!existing.asset_class) {
+      existing.asset_class = await classifyAsset(symbol)
+    }
   } else {
+    const assetClass = await classifyAsset(symbol)
     p.positions.push({
       position_id: uuidv4(),
       symbol, quantity,
@@ -121,6 +128,7 @@ async function executeBuyTrade(portfolioId, symbol, quantity, price) {
       unrealized_gain_loss: 0,
       unrealized_gain_loss_percent: 0,
       updated_at: new Date(),
+      asset_class: assetClass,
     })
     p.position_count++
   }

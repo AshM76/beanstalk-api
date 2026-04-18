@@ -84,6 +84,42 @@ const isAssetAllowed = async (symbol, challengeRules = {}) => {
     }
 }
 
+// ── Pure classifier — no rule enforcement ─────────────────────
+// Returns 'STOCK' | 'ETF' | 'CRYPTO' | null.
+// Used at buy-time to tag a new position with its asset class. Does NOT
+// enforce tradability / exchange / leverage rules — those are already
+// checked by isAssetAllowed earlier in the trade flow. Returns null on
+// any failure so classification can never block a trade that was
+// otherwise authorized; the read path (mobile) defaults missing values
+// to Stock so null is safe.
+const classifyAsset = async (symbol) => {
+    try {
+        const asset = await getAsset(symbol)
+        const cls = asset.asset_class || asset.class
+
+        if (cls === 'crypto') return 'CRYPTO'
+
+        if (cls === 'us_equity') {
+            const name = (asset.name || '').toLowerCase()
+            const isETF = name.includes('etf') || name.includes('fund') || name.includes('trust')
+            return isETF ? 'ETF' : 'STOCK'
+        }
+
+        return null
+    } catch (error) {
+        // Structured so outage-nulls (Alpaca down / timeout / 5xx) can be
+        // told apart from bug-nulls (unknown asset_class, schema drift).
+        console.error('[classifyAsset] failed', {
+            symbol,
+            error: error.message,
+            code: error.code || error.statusCode || null,
+            status: error.response?.status || null,
+            timestamp: new Date().toISOString(),
+        })
+        return null
+    }
+}
+
 // ── Filter a batch of search results ─────────────────────────
 const filterAssets = async (assets, challengeRules = {}) => {
     const results = await Promise.all(
@@ -95,4 +131,4 @@ const filterAssets = async (assets, challengeRules = {}) => {
     return results.filter(Boolean)
 }
 
-module.exports = { isAssetAllowed, filterAssets, isLeveragedOrInverse }
+module.exports = { isAssetAllowed, classifyAsset, filterAssets, isLeveragedOrInverse }
