@@ -10,6 +10,7 @@
  */
 
 const { portfolioToRow, rowToPortfolio } = require('../src/services/portfolio.mappers')
+const { classifyAsset } = require('../src/services/assetFilter.service')
 
 describe('portfolio mapper round-trip', () => {
   const basePortfolio = {
@@ -102,5 +103,19 @@ describe('portfolio mapper round-trip', () => {
 
     const portfolio = rowToPortfolio(legacyRow)
     expect(portfolio.positions[0].asset_class).toBeNull()
+  })
+})
+
+describe('classifyAsset local-dev mode', () => {
+  // Unconditional delete — avoids the process.env coercion gotcha where
+  // assigning undefined becomes the string 'undefined'.
+  afterEach(() => {
+    delete process.env.BEANSTALK_USE_ALPACA
+  })
+
+  test('uses local map when BEANSTALK_USE_ALPACA is unset', async () => {
+    delete process.env.BEANSTALK_USE_ALPACA
+    const result = await classifyAsset('SPY')
+    expect(result).toBe('ETF')
   })
 })

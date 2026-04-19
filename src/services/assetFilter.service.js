@@ -1,5 +1,35 @@
 const { getAsset } = require('./alpaca.service')
 
+// ── Local-dev asset class map ─────────────────────────────────
+// Used by classifyAsset when BEANSTALK_USE_ALPACA !== 'true' so the
+// backend can classify symbols without a live Alpaca dependency during
+// local development. Kept intentionally small — only the symbols we
+// actually exercise in dev. Unknown symbols return null (same fail-open
+// semantics as the Alpaca path).
+const LOCAL_ASSET_CLASS_MAP = {
+    // Stocks
+    AAPL:  'STOCK',
+    MSFT:  'STOCK',
+    GOOGL: 'STOCK',
+    TSLA:  'STOCK',
+    NVDA:  'STOCK',
+    AMZN:  'STOCK',
+    META:  'STOCK',
+    COIN:  'STOCK',
+    // ETFs
+    SPY:   'ETF',
+    QQQ:   'ETF',
+    VTI:   'ETF',
+    VOO:   'ETF',
+    XLF:   'ETF',
+    XLK:   'ETF',
+    // Crypto
+    BTC:   'CRYPTO',
+    ETH:   'CRYPTO',
+    XRP:   'CRYPTO',
+    SOL:   'CRYPTO',
+}
+
 // ── Allowed exchanges ─────────────────────────────────────────
 const ALLOWED_EXCHANGES = ['NYSE', 'NASDAQ', 'AMEX', 'ARCA', 'BATS']
 
@@ -93,6 +123,16 @@ const isAssetAllowed = async (symbol, challengeRules = {}) => {
 // otherwise authorized; the read path (mobile) defaults missing values
 // to Stock so null is safe.
 const classifyAsset = async (symbol) => {
+    // Local-dev mode: skip the Alpaca round-trip and use the hardcoded
+    // map. Gated on BEANSTALK_USE_ALPACA !== 'true' so CI / prod must
+    // opt in explicitly.
+    if (process.env.BEANSTALK_USE_ALPACA !== 'true') {
+        const mapped = LOCAL_ASSET_CLASS_MAP[symbol]
+        if (mapped) return mapped
+        console.log('[classifyAsset] local-map miss', { symbol })
+        return null
+    }
+
     try {
         const asset = await getAsset(symbol)
         const cls = asset.asset_class || asset.class
