@@ -1,5 +1,35 @@
 const { getAsset } = require('./alpaca.service')
 
+// ── Local-dev asset class map ─────────────────────────────────
+// Used by classifyAsset when BEANSTALK_USE_ALPACA !== 'true' so the
+// backend can classify symbols without a live Alpaca dependency during
+// local development. Kept intentionally small — only the symbols we
+// actually exercise in dev. Unknown symbols return null (same fail-open
+// semantics as the Alpaca path).
+const LOCAL_ASSET_CLASS_MAP = {
+    // Stocks
+    AAPL:  'STOCK',
+    MSFT:  'STOCK',
+    GOOGL: 'STOCK',
+    TSLA:  'STOCK',
+    NVDA:  'STOCK',
+    AMZN:  'STOCK',
+    META:  'STOCK',
+    COIN:  'STOCK',
+    // ETFs
+    SPY:   'ETF',
+    QQQ:   'ETF',
+    VTI:   'ETF',
+    VOO:   'ETF',
+    XLF:   'ETF',
+    XLK:   'ETF',
+    // Crypto
+    BTC:   'CRYPTO',
+    ETH:   'CRYPTO',
+    XRP:   'CRYPTO',
+    SOL:   'CRYPTO',
+}
+
 // ── Allowed exchanges ─────────────────────────────────────────
 const ALLOWED_EXCHANGES = ['NYSE', 'NASDAQ', 'AMEX', 'ARCA', 'BATS']
 
@@ -84,6 +114,52 @@ const isAssetAllowed = async (symbol, challengeRules = {}) => {
     }
 }
 
+// ── Pure classifier — no rule enforcement ─────────────────────
+// Returns 'STOCK' | 'ETF' | 'CRYPTO' | null.
+// Used at buy-time to tag a new position with its asset class. Does NOT
+// enforce tradability / exchange / leverage rules — those are already
+// checked by isAssetAllowed earlier in the trade flow. Returns null on
+// any failure so classification can never block a trade that was
+// otherwise authorized; the read path (mobile) defaults missing values
+// to Stock so null is safe.
+const classifyAsset = async (symbol) => {
+    // Local-dev mode: skip the Alpaca round-trip and use the hardcoded
+    // map. Gated on BEANSTALK_USE_ALPACA !== 'true' so CI / prod must
+    // opt in explicitly.
+    if (process.env.BEANSTALK_USE_ALPACA !== 'true') {
+        const mapped = LOCAL_ASSET_CLASS_MAP[symbol]
+        if (mapped) return mapped
+        console.log('[classifyAsset] local-map miss', { symbol })
+        return null
+    }
+
+    try {
+        const asset = await getAsset(symbol)
+        const cls = asset.asset_class || asset.class
+
+        if (cls === 'crypto') return 'CRYPTO'
+
+        if (cls === 'us_equity') {
+            const name = (asset.name || '').toLowerCase()
+            const isETF = name.includes('etf') || name.includes('fund') || name.includes('trust')
+            return isETF ? 'ETF' : 'STOCK'
+        }
+
+        return null
+    } catch (error) {
+        // Structured so outage-nulls (Alpaca down / timeout / 5xx) can be
+        // told apart from bug-nulls (unknown asset_class, schema drift).
+        console.error('[classifyAsset] failed', {
+            symbol,
+            error: error.message,
+            code: error.code || error.statusCode || null,
+            status: error.response?.status || null,
+            timestamp: new Date().toISOString(),
+        })
+        return null
+    }
+}
+
 // ── Filter a batch of search results ─────────────────────────
 const filterAssets = async (assets, challengeRules = {}) => {
     const results = await Promise.all(
@@ -95,4 +171,4 @@ const filterAssets = async (assets, challengeRules = {}) => {
     return results.filter(Boolean)
 }
 
-module.exports = { isAssetAllowed, filterAssets, isLeveragedOrInverse }
+module.exports = { isAssetAllowed, classifyAsset, filterAssets, isLeveragedOrInverse }
