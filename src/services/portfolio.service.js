@@ -493,6 +493,7 @@ async function savePortfolioToDatabase(portfolio) {
         { name: 'unrealized_gain_loss', type: { type: 'NUMERIC' } },
         { name: 'unrealized_gain_loss_percent', type: { type: 'NUMERIC' } },
         { name: 'updated_at', type: { type: 'DATETIME' } },
+        { name: 'asset_class', type: { type: 'STRING' } },
       ],
     },
   }
@@ -632,6 +633,7 @@ async function updatePortfolioInDatabase(portfolio) {
         { name: 'unrealized_gain_loss', type: { type: 'NUMERIC' } },
         { name: 'unrealized_gain_loss_percent', type: { type: 'NUMERIC' } },
         { name: 'updated_at', type: { type: 'DATETIME' } },
+        { name: 'asset_class', type: { type: 'STRING' } },
       ],
     },
   }
