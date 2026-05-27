@@ -44,5 +44,6 @@ app.use('/api', require('./routes/api/onboarding.route'))     // age verificatio
 app.use('/api', require('./routes/api/compliance.route'))     // EULA & consent management
 app.use('/api', require('./routes/api/portfolio.route'))      // portfolio & trading operations
 app.use('/api', require('./routes/api/contest.route'))        // contests & leaderboards
+app.use('/api/ai', require('./routes/ai'))                    // AI advisor (Cash)
 
 module.exports = app
