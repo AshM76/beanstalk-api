@@ -17,27 +17,14 @@ app.use(require('./routes/index.route'))
 // ── Routes: mobile app ────────────────────────────────────────
 app.use('/api', require('./routes/app/auth.route'))
 app.use('/api', require('./routes/app/user.route'))
-app.use('/api', require('./routes/app/session.route'))       // lesson sessions
-app.use('/api', require('./routes/app/stores.route'))        // course providers
 app.use('/api', require('./routes/app/notifications.route'))
-app.use('/api', require('./routes/app/clinicians.route'))    // mentors
 app.use('/api', require('./routes/app/demo.route'))
-
-// ── Routes: web portal ────────────────────────────────────────
-app.use('/api', require('./routes/web/auth.dispensary.route'))
-app.use('/api', require('./routes/web/dispensaries.route'))  // course providers
-app.use('/api', require('./routes/web/stores.route'))
-app.use('/api', require('./routes/web/clinicians.route'))    // mentors
 
 // ── Routes: auth (in-memory / test mode) ──────────────────────
 app.use('/api', require('./routes/api/auth.route'))
 
 // ── Routes: shared ────────────────────────────────────────────
 app.use('/api', require('./routes/api/market.route'))        // Alpaca market data
-app.use('/api', require('./routes/api/roles.route'))
-app.use('/api', require('./routes/api/chat.route'))
-app.use('/api', require('./routes/api/deals.route'))         // rewards
-app.use('/api', require('./routes/api/inventory.route'))     // content library
 app.use('/api', require('./routes/api/cloudstorage.route'))
 app.use('/api', require('./routes/api/trading.route'))          // Alpaca paper trading
 app.use('/api', require('./routes/api/onboarding.route'))     // age verification & parental consent
