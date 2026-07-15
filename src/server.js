@@ -31,7 +31,16 @@ if (BEANSTALK_ENVIRONMENT === 'demo') {
     require('../scripts/seed-demo')().catch(err => console.error('[Seed] FAILED:', err.message))
 }
 
-if (BEANSTALK_ENVIRONMENT == 'production') {
+// When TLS is terminated by an upstream proxy (Fly.io, Railway, any load
+// balancer), the app must NOT try to read Let's Encrypt certs off local disk
+// or bind :443 — the proxy already handles HTTPS and forwards plain HTTP to
+// app.get('port'). Fly injects FLY_APP_NAME into every machine; the explicit
+// BEANSTALK_TLS_TERMINATION=proxy flag lets other hosts opt in the same way.
+const isBehindProxyTls =
+    !!process.env.FLY_APP_NAME || process.env.BEANSTALK_TLS_TERMINATION === 'proxy'
+
+if (BEANSTALK_ENVIRONMENT == 'production' && !isBehindProxyTls) {
+    // Self-hosted production: terminate TLS ourselves via Let's Encrypt certs.
     // Htmls
     const httpsServer = https.createServer({
         key: fs.readFileSync('/etc/letsencrypt/live/beanstalk.app/privkey.pem'),

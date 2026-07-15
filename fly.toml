@@ -8,7 +8,18 @@ primary_region = "sjc"
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  # Keep one machine warm: demo mode holds state in-memory, so an auto-stopped
+  # machine would drop all seeded users/contests/portfolios on the next request.
+  min_machines_running = 1
+
+  # Liveness/readiness probe. Hits the dependency-free /health route added in
+  # src/app.js; a non-200 marks the machine unhealthy and blocks bad deploys.
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
 
 [env]
   BEANSTALK_SERVER_PORT = "8080"
