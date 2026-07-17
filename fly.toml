@@ -23,12 +23,17 @@ primary_region = "sjc"
 
 [env]
   BEANSTALK_SERVER_PORT = "8080"
-  # "demo" behaves like "test" (in-memory store, auth bypass, mock trade
-  # fills) but additionally auto-seeds users, contests, and portfolios on
-  # every server boot via src/server.js → scripts/seed-demo.js. Needed
-  # because Fly auto-stops idle machines and the in-memory store doesn't
-  # survive restarts. Adds ~3s to cold-start.
+  # "demo" behaves like "test" (in-memory store, mock trade fills) but
+  # additionally auto-seeds users, contests, and portfolios on boot via
+  # src/server.js → scripts/seed-demo.js. Auth is ENFORCED here: the legacy
+  # unauthenticated bypass stays off (BEANSTALK_AUTH_BYPASS unset), so testers
+  # must sign up / log in for a real account. Set BEANSTALK_AUTH_BYPASS=true
+  # only for local curl-driven testing.
   BEANSTALK_ENVIRONMENT = "demo"
   BEANSTALK_SERVER_VERSION = "v1.0.0"
   BEANSTALK_GCP_BIGQUERY_DATASETID = "beanstalk_development"
   FIREBASE_PROJECT_ID = "beanstalk-vtrading"
+  # Demo admin allowlist: these emails get role 'admin' (create/conclude
+  # contests, cross-user reads). Must include the seed's admin account so
+  # seeding can create contests; everyone else is an isolated 'user'.
+  BEANSTALK_ADMIN_EMAILS = "admin@beanstalk.app"

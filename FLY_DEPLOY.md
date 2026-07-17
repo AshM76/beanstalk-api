@@ -34,6 +34,12 @@ secrets are only required once you switch to `production`.
 ### Required now (demo mode)
 
 ```bash
+# JWT signing key for signup/login tokens (src/services/index.js →
+# createToken/decodeToken use BEANSTALK_KEY_TOKEN). REQUIRED now that demo
+# mode enforces auth — if unset, tokens are signed with an empty key and are
+# trivially forgeable. Generate with: openssl rand -base64 48
+fly secrets set BEANSTALK_KEY_TOKEN="$(openssl rand -base64 48)"
+
 # AI advisor "Cash" — the only external call demo mode actually makes.
 fly secrets set ANTHROPIC_API_KEY=sk-ant-...
 
@@ -49,7 +55,9 @@ fly secrets set \
 ### Additionally required for `production` mode
 
 ```bash
-# JWT signing secret (auth is bypassed in demo, enforced in production).
+# JWT_SECRET is only used by the (currently unwired) ID-verification flow in
+# age_verification.service.js. Set it if/when you enable that; the main auth
+# token key is BEANSTALK_KEY_TOKEN, already set above.
 fly secrets set JWT_SECRET="$(openssl rand -base64 48)"
 
 # Real Alpaca paper-trading (demo uses mock fills).
