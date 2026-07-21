@@ -24,11 +24,18 @@ app.listen(app.get('port'), () => {
 
 console.log('[Beanstalk] :: Enviroment:', BEANSTALK_ENVIRONMENT)
 
-// Seed demo data in demo mode so the app launches with a rich environment.
-// 'demo' mode behaves like 'test' (in-memory store, auth bypass) but also
-// auto-populates users, contests, portfolios, and leaderboards on boot.
-if (BEANSTALK_ENVIRONMENT === 'demo') {
-    require('../scripts/seed-demo')().catch(err => console.error('[Seed] FAILED:', err.message))
+// Restore any persisted in-memory snapshot (from the Fly volume) before
+// seeding, then seed demo data only when there was nothing to restore — i.e.
+// a fresh volume / first boot. This keeps tester accounts across deploys and
+// restarts instead of re-seeding over them every time.
+if (['test', 'demo'].includes(BEANSTALK_ENVIRONMENT)) {
+    const memStore = require('./services/_memory_store')
+    const { restored } = memStore.initPersistence()
+    if (restored) {
+        console.log('[Beanstalk] :: restored store from snapshot — skipping demo seed')
+    } else if (BEANSTALK_ENVIRONMENT === 'demo') {
+        require('../scripts/seed-demo')().catch(err => console.error('[Seed] FAILED:', err.message))
+    }
 }
 
 // When TLS is terminated by an upstream proxy (Fly.io, Railway, any load

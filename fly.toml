@@ -8,8 +8,9 @@ primary_region = "sjc"
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  # Keep one machine warm: demo mode holds state in-memory, so an auto-stopped
-  # machine would drop all seeded users/contests/portfolios on the next request.
+  # Keep one machine warm. State is snapshotted to the /data volume (see
+  # [mounts]) so it survives restarts, but keeping one machine avoids
+  # cold-start latency and re-seed churn.
   min_machines_running = 1
 
   # Liveness/readiness probe. Hits the dependency-free /health route added in
@@ -37,3 +38,18 @@ primary_region = "sjc"
   # contests, cross-user reads). Must include the seed's admin account so
   # seeding can create contests; everyone else is an isolated 'user'.
   BEANSTALK_ADMIN_EMAILS = "admin@beanstalk.app"
+
+# Durable snapshot for the in-memory demo store. The app periodically writes
+# /data/store.json and restores it on boot, so tester accounts survive Fly
+# deploys and restarts. Create the volume ONCE before deploying:
+#   fly volumes create beanstalk_data --region sjc --size 1
+#
+# SINGLE-MACHINE CONSTRAINT: this store lives in one machine's memory + one
+# volume. Do NOT create a second volume or scale past one machine, or testers
+# would get divergent stores. The single volume is itself the cap — Fly can't
+# start a second machine without a second volume to mount at /data, so
+# autoscaling under load cannot spin up a divergent instance. Keep it at one:
+#   fly scale count 1
+[mounts]
+  source = "beanstalk_data"
+  destination = "/data"

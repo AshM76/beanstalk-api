@@ -8,6 +8,8 @@
  */
 
 const crypto = require('crypto')
+const fs = require('fs')
+const path = require('path')
 const { classifyAsset } = require('./assetFilter.service')
 
 const uuidv4 = () => crypto.randomUUID()
@@ -472,7 +474,119 @@ async function concludeContest(contestId) {
   return { contest_id: contestId, concluded_at: c.concluded_at, results }
 }
 
+// ── Persistence (snapshot to disk) ─────────────────────────────
+//
+// The store is pure in-memory, so a process restart (Fly deploy, crash, OOM)
+// would wipe every account. When a snapshot target is available — the Fly
+// volume mounted at /data — we periodically serialize the whole store to a
+// JSON file and restore it on boot, so tester accounts survive restarts.
+//
+// Persistence is OFF unless the snapshot directory exists (or the path is set
+// explicitly), so local dev and tests stay pure in-memory with no disk I/O.
+
+const SNAPSHOT_PATH = process.env.BEANSTALK_SNAPSHOT_PATH || '/data/store.json'
+const SNAPSHOT_INTERVAL_MS = Number(process.env.BEANSTALK_SNAPSHOT_INTERVAL_MS || 10000)
+
+let _snapshotTimer = null
+let _lastJson = null
+
+// JSON (de)serialization that preserves Date instances anywhere in the graph.
+// JSON.stringify calls Date.toJSON() before the replacer, so we detect the
+// original value via `this[key]`.
+function _replacer(key, value) {
+  return this[key] instanceof Date ? { __t: 'Date', v: this[key].toISOString() } : value
+}
+function _reviver(key, value) {
+  return value && value.__t === 'Date' ? new Date(value.v) : value
+}
+
+function persistenceEnabled() {
+  try {
+    return fs.existsSync(path.dirname(SNAPSHOT_PATH))
+  } catch (_) {
+    return false
+  }
+}
+
+function _serialize() {
+  return JSON.stringify({
+    version: 1,
+    users: [...users.entries()],
+    usersByEmail: [...usersByEmail.entries()],
+    portfolios: [...portfolios.entries()],
+    transactions,
+    contests: [...contests.entries()],
+    participations,
+  }, _replacer)
+}
+
+// Write the current store to disk atomically (temp file + rename) so a crash
+// mid-write can't corrupt the snapshot. Skips the write when nothing changed.
+function snapshot() {
+  if (!persistenceEnabled()) return false
+  try {
+    const json = _serialize()
+    if (json === _lastJson) return false
+    const tmp = `${SNAPSHOT_PATH}.tmp`
+    fs.writeFileSync(tmp, json)
+    fs.renameSync(tmp, SNAPSHOT_PATH)
+    _lastJson = json
+    return true
+  } catch (err) {
+    console.error('[Store] snapshot failed:', err.message)
+    return false
+  }
+}
+
+// Load a prior snapshot into the live collections. Returns true if data was
+// restored, false if there was nothing to restore.
+function restore() {
+  try {
+    if (!fs.existsSync(SNAPSHOT_PATH)) return false
+    const data = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf8'), _reviver)
+    users.clear(); (data.users || []).forEach(([k, v]) => users.set(k, v))
+    usersByEmail.clear(); (data.usersByEmail || []).forEach(([k, v]) => usersByEmail.set(k, v))
+    portfolios.clear(); (data.portfolios || []).forEach(([k, v]) => portfolios.set(k, v))
+    contests.clear(); (data.contests || []).forEach(([k, v]) => contests.set(k, v))
+    transactions.length = 0; transactions.push(...(data.transactions || []))
+    participations.length = 0; participations.push(...(data.participations || []))
+    _lastJson = _serialize()
+    return users.size > 0 || portfolios.size > 0 || contests.size > 0
+  } catch (err) {
+    console.error('[Store] restore failed (starting empty):', err.message)
+    return false
+  }
+}
+
+// Called once at boot (from server.js) before seeding. Restores any prior
+// snapshot, then starts a periodic writer and flushes on shutdown signals so
+// the latest state is captured before a Fly deploy replaces the machine.
+function initPersistence() {
+  if (!persistenceEnabled()) {
+    return { enabled: false, restored: false }
+  }
+  const restored = restore()
+
+  _snapshotTimer = setInterval(snapshot, SNAPSHOT_INTERVAL_MS)
+  if (_snapshotTimer.unref) _snapshotTimer.unref()
+
+  const flushAndExit = (signal) => {
+    snapshot()
+    console.log(`[Store] snapshot flushed on ${signal}`)
+    process.exit(0)
+  }
+  process.once('SIGTERM', () => flushAndExit('SIGTERM'))
+  process.once('SIGINT', () => flushAndExit('SIGINT'))
+
+  console.log(`[Store] persistence enabled → ${SNAPSHOT_PATH} (restored=${restored})`)
+  return { enabled: true, restored }
+}
+
 module.exports = {
+  initPersistence,
+  snapshot,
+  restore,
+  persistenceEnabled,
   portfolio: {
     createPortfolio,
     getPortfolio,
