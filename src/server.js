@@ -24,14 +24,30 @@ app.listen(app.get('port'), () => {
 
 console.log('[Beanstalk] :: Enviroment:', BEANSTALK_ENVIRONMENT)
 
-// Seed demo data in demo mode so the app launches with a rich environment.
-// 'demo' mode behaves like 'test' (in-memory store, auth bypass) but also
-// auto-populates users, contests, portfolios, and leaderboards on boot.
-if (BEANSTALK_ENVIRONMENT === 'demo') {
-    require('../scripts/seed-demo')().catch(err => console.error('[Seed] FAILED:', err.message))
+// Restore any persisted in-memory snapshot (from the Fly volume) before
+// seeding, then seed demo data only when there was nothing to restore — i.e.
+// a fresh volume / first boot. This keeps tester accounts across deploys and
+// restarts instead of re-seeding over them every time.
+if (['test', 'demo'].includes(BEANSTALK_ENVIRONMENT)) {
+    const memStore = require('./services/_memory_store')
+    const { restored } = memStore.initPersistence()
+    if (restored) {
+        console.log('[Beanstalk] :: restored store from snapshot — skipping demo seed')
+    } else if (BEANSTALK_ENVIRONMENT === 'demo') {
+        require('../scripts/seed-demo')().catch(err => console.error('[Seed] FAILED:', err.message))
+    }
 }
 
-if (BEANSTALK_ENVIRONMENT == 'production') {
+// When TLS is terminated by an upstream proxy (Fly.io, Railway, any load
+// balancer), the app must NOT try to read Let's Encrypt certs off local disk
+// or bind :443 — the proxy already handles HTTPS and forwards plain HTTP to
+// app.get('port'). Fly injects FLY_APP_NAME into every machine; the explicit
+// BEANSTALK_TLS_TERMINATION=proxy flag lets other hosts opt in the same way.
+const isBehindProxyTls =
+    !!process.env.FLY_APP_NAME || process.env.BEANSTALK_TLS_TERMINATION === 'proxy'
+
+if (BEANSTALK_ENVIRONMENT == 'production' && !isBehindProxyTls) {
+    // Self-hosted production: terminate TLS ourselves via Let's Encrypt certs.
     // Htmls
     const httpsServer = https.createServer({
         key: fs.readFileSync('/etc/letsencrypt/live/beanstalk.app/privkey.pem'),

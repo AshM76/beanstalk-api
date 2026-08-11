@@ -11,6 +11,19 @@ app.use(express.urlencoded({ extended: true }))
 app.use(express.json())
 app.use(cors())
 
+// ── Health check ──────────────────────────────────────────────
+// Dependency-free liveness probe used by Fly's [[http_service.checks]] (and
+// any other uptime monitor). Must not touch BigQuery/Firebase so it returns
+// 200 even when downstream services are cold or unconfigured.
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    version: process.env.BEANSTALK_SERVER_VERSION || null,
+    environment: process.env.BEANSTALK_ENVIRONMENT || null,
+    uptime: process.uptime(),
+  })
+})
+
 // ── Routes: index ─────────────────────────────────────────────
 app.use(require('./routes/index.route'))
 

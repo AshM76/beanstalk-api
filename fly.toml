@@ -8,16 +8,48 @@ primary_region = "sjc"
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  # Keep one machine warm. State is snapshotted to the /data volume (see
+  # [mounts]) so it survives restarts, but keeping one machine avoids
+  # cold-start latency and re-seed churn.
+  min_machines_running = 1
+
+  # Liveness/readiness probe. Hits the dependency-free /health route added in
+  # src/app.js; a non-200 marks the machine unhealthy and blocks bad deploys.
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
 
 [env]
   BEANSTALK_SERVER_PORT = "8080"
-  # "demo" behaves like "test" (in-memory store, auth bypass, mock trade
-  # fills) but additionally auto-seeds users, contests, and portfolios on
-  # every server boot via src/server.js → scripts/seed-demo.js. Needed
-  # because Fly auto-stops idle machines and the in-memory store doesn't
-  # survive restarts. Adds ~3s to cold-start.
+  # "demo" behaves like "test" (in-memory store, mock trade fills) but
+  # additionally auto-seeds users, contests, and portfolios on boot via
+  # src/server.js → scripts/seed-demo.js. Auth is ENFORCED here: the legacy
+  # unauthenticated bypass stays off (BEANSTALK_AUTH_BYPASS unset), so testers
+  # must sign up / log in for a real account. Set BEANSTALK_AUTH_BYPASS=true
+  # only for local curl-driven testing.
   BEANSTALK_ENVIRONMENT = "demo"
   BEANSTALK_SERVER_VERSION = "v1.0.0"
   BEANSTALK_GCP_BIGQUERY_DATASETID = "beanstalk_development"
   FIREBASE_PROJECT_ID = "beanstalk-vtrading"
+  # Demo admin allowlist: these emails get role 'admin' (create/conclude
+  # contests, cross-user reads). Must include the seed's admin account so
+  # seeding can create contests; everyone else is an isolated 'user'.
+  BEANSTALK_ADMIN_EMAILS = "admin@beanstalk.app"
+
+# Durable snapshot for the in-memory demo store. The app periodically writes
+# /data/store.json and restores it on boot, so tester accounts survive Fly
+# deploys and restarts. Create the volume ONCE before deploying:
+#   fly volumes create beanstalk_data --region sjc --size 1
+#
+# SINGLE-MACHINE CONSTRAINT: this store lives in one machine's memory + one
+# volume. Do NOT create a second volume or scale past one machine, or testers
+# would get divergent stores. The single volume is itself the cap — Fly can't
+# start a second machine without a second volume to mount at /data, so
+# autoscaling under load cannot spin up a divergent instance. Keep it at one:
+#   fly scale count 1
+[mounts]
+  source = "beanstalk_data"
+  destination = "/data"
