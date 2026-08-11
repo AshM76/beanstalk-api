@@ -44,6 +44,39 @@ const getPrices = async (symbols) => {
     }
 }
 
+// ── Price map for mixed stock/crypto symbol lists ─────────────
+// Returns { SYMBOL: price } from the latest stock bars, falling back to the
+// crypto bars endpoint for symbols the stock feed doesn't know (e.g. BTC).
+// Symbols that fail both lookups are omitted — callers treat a missing entry
+// as "keep the last stored price". Outside market hours bars return the last
+// close, so weekends degrade to Friday's close rather than erroring.
+const getPriceMap = async (symbols) => {
+    const out = {}
+    if (!Array.isArray(symbols) || symbols.length === 0) return out
+    try {
+        const bars = await alpaca.getLatestBars(symbols)
+        const entries = bars instanceof Map ? bars.entries() : Object.entries(bars || {})
+        for (const [symbol, bar] of entries) {
+            if (bar) out[symbol] = bar.ClosePrice
+        }
+    } catch (error) {
+        console.error('[alpaca.getPriceMap] stock batch failed:', error.message)
+    }
+    const missing = symbols.filter(s => out[s] == null)
+    await Promise.all(missing.map(async (symbol) => {
+        const pair = symbol.endsWith('USD') ? symbol : `${symbol}USD`
+        try {
+            const bars = alpaca.getBarsV2(pair, { timeframe: '1Day', limit: 2 })
+            let last = null
+            for await (const bar of bars) last = bar
+            if (last) out[symbol] = last.ClosePrice
+        } catch {
+            // Not a crypto pair either — leave the position at its last price.
+        }
+    }))
+    return out
+}
+
 // ── Asset metadata (exchange, asset_class, tradable flags) ────
 const getAsset = async (symbol) => {
     try {
@@ -123,6 +156,7 @@ const getMarketClock = async () => {
 module.exports = {
     getPrice,
     getPrices,
+    getPriceMap,
     getAsset,
     searchAssets,
     getBars,

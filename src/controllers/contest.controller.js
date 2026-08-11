@@ -5,6 +5,7 @@
 
 const contestService = require('../services/contest.service')
 const portfolioService = require('../services/portfolio.service')
+const alpacaService = require('../services/alpaca.service')
 
 /**
  * POST /api/contests
@@ -286,16 +287,62 @@ async function getContestParticipants(req, res) {
   }
 }
 
+// Reprice every participant's contest portfolio with live quotes at most once
+// per REPRICE_TTL_MS per contest, so standings track the market instead of
+// freezing at each player's last trade. Any failure falls back to the stored
+// prices — a stale board beats a 500.
+const REPRICE_TTL_MS = 60 * 1000
+const lastRepriceAt = new Map() // contestId -> epoch ms
+
+async function repriceContestPortfolios(contestId) {
+  const last = lastRepriceAt.get(contestId)
+  if (last && Date.now() - last < REPRICE_TTL_MS) return
+  // Stamp before the work so a failing quote provider is retried at most
+  // once per TTL window instead of on every request.
+  lastRepriceAt.set(contestId, Date.now())
+  try {
+    const participants = await contestService.getContestParticipants(contestId)
+    const symbols = [...new Set(
+      participants.flatMap(p =>
+        (p.portfolio_snapshot?.positions || []).map(pos => pos.symbol)
+      )
+    )]
+    if (symbols.length === 0) return
+
+    const priceMap = await alpacaService.getPriceMap(symbols)
+    if (Object.keys(priceMap).length === 0) return
+
+    await Promise.all(
+      participants
+        .filter(p =>
+          p.portfolio_snapshot_id &&
+          (p.portfolio_snapshot?.positions || []).length > 0
+        )
+        .map(p =>
+          portfolioService.updatePortfolioPrices(p.portfolio_snapshot_id, priceMap)
+            .catch(err => {
+              console.error(`[contest.reprice] portfolio ${p.portfolio_snapshot_id}:`, err.message)
+            })
+        )
+    )
+  } catch (error) {
+    console.error('[contest.reprice] skipped:', error.message)
+  }
+}
+
 async function getLeaderboard(req, res) {
   try {
     const { contestId } = req.params
     const { age_group } = req.query
+
+    await repriceContestPortfolios(contestId)
 
     const leaderboards = await contestService.getLeaderboard(contestId, age_group)
 
     res.json({
       contest_id: contestId,
       leaderboards: leaderboards,
+      as_of: new Date().toISOString(),
     })
   } catch (error) {
     console.error('Leaderboard fetch error:', error)

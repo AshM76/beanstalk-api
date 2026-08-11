@@ -32,6 +32,7 @@ const DATASET = BEANSTALK_GCP_BIGQUERY_DATASETID
 const CONTEST_TABLE = `\`${BEANSTALK_GCP_BIGQUERY_PROJECTID}.${DATASET}.contest\``
 const PARTICIPANT_TABLE = `\`${BEANSTALK_GCP_BIGQUERY_PROJECTID}.${DATASET}.contest_participant\``
 const PORTFOLIO_TABLE = `\`${BEANSTALK_GCP_BIGQUERY_PROJECTID}.${DATASET}.portfolio\``
+const USERS_TABLE = `\`${BEANSTALK_GCP_BIGQUERY_PROJECTID}.${DATASET}.users\``
 
 function toBqDatetime(value) {
   if (value === null || value === undefined) return null
@@ -750,6 +751,7 @@ async function getContestParticipants(contestId, ageGroup) {
       cp.entry_date,
       cp.status,
       cp.portfolio_snapshot_id,
+      u.name                    AS u_name,
       p.portfolio_id            AS p_portfolio_id,
       p.total_portfolio_value   AS p_total_portfolio_value,
       p.total_return_percent    AS p_total_return_percent,
@@ -757,6 +759,8 @@ async function getContestParticipants(contestId, ageGroup) {
       p.position_count          AS p_position_count,
       p.positions               AS p_positions
     FROM ${PARTICIPANT_TABLE} cp
+    LEFT JOIN ${USERS_TABLE} u
+      ON u.user_id = cp.user_id
     LEFT JOIN ${PORTFOLIO_TABLE} p
       ON p.portfolio_id = cp.portfolio_snapshot_id
     WHERE ${wheres.join(' AND ')}
@@ -767,7 +771,7 @@ async function getContestParticipants(contestId, ageGroup) {
     participation_id: r.participation_id,
     contest_id: r.contest_id,
     user_id: r.user_id,
-    username: null, // Resolved by callers that join to users; not available here
+    username: r.u_name || null, // real display name; client anonymizes when null
     age_group_at_entry: r.age_group_at_entry,
     entry_date: unwrapDatetime(r.entry_date),
     status: r.status,
