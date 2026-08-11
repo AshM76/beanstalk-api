@@ -396,7 +396,9 @@ async function getContestParticipants(contestId, ageGroup) {
   )
   return rows.map(p => ({
     ...p,
-    username: p.user_id, // no user table in-memory; surface the id
+    // Real display name from the in-memory users table; fall back to the id
+    // (the mobile client anonymizes UUID-shaped names to "Player abc123…").
+    username: users.get(p.user_id)?.name || p.user_id,
     portfolio_snapshot: portfolios.get(p.portfolio_snapshot_id) || null,
   }))
 }
