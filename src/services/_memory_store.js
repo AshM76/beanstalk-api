@@ -21,6 +21,7 @@ const portfolios = new Map()        // portfolio_id -> portfolio
 const transactions = []             // flat list of transaction rows
 const contests = new Map()          // contest_id -> contest
 const participations = []           // participation rows
+const assets = new Map()            // asset_id -> {content_type, data (base64), size, created_at}
 
 // ── Portfolio helpers ─────────────────────────────────────────
 
@@ -266,6 +267,12 @@ async function createContest(creatorId, data) {
     total_prize_pool: calculateTotalPrizePool(data.prizes),
     status,
     visibility: data.visibility || 'public',
+    // Optional short display name for space-constrained mobile UI (chips,
+    // pickers). Falls back to `name` on clients when absent.
+    short_name: data.short_name || null,
+    // IANA timezone the admin scheduled the contest in. Stored as display
+    // metadata; start/end are interpreted as sent (no tz-aware conversion).
+    timezone: data.timezone || null,
     sponsor_name: data.sponsor_name || null,
     sponsor_logo_url: data.sponsor_logo_url || null,
     sponsor_tagline: data.sponsor_tagline || null,
@@ -280,6 +287,27 @@ async function createContest(creatorId, data) {
 
 async function getContest(id) {
   return contests.get(id) || null
+}
+
+// ── Contest assets (sponsor logos, banners) ──────────────────────────────────
+// Small binary blobs stored as base64 so they ride the volume snapshot and
+// can be served over plain HTTP to clients that can't attach auth headers
+// (the mobile app's image widgets). Size is capped at the controller layer.
+
+async function createAsset({ content_type, data }) {
+  const asset = {
+    asset_id: uuidv4(),
+    content_type,
+    data, // base64 (no data: prefix)
+    size: Buffer.byteLength(data, 'base64'),
+    created_at: new Date(),
+  }
+  assets.set(asset.asset_id, asset)
+  return asset
+}
+
+async function getAsset(id) {
+  return assets.get(id) || null
 }
 
 // Mutable fields on a contest. Anything not in this list is silently ignored
@@ -306,6 +334,8 @@ const CONTEST_MUTABLE_FIELDS = new Set([
   'prizes',
   'status',
   'visibility',
+  'short_name',
+  'timezone',
   'sponsor_name',
   'sponsor_logo_url',
   'sponsor_tagline',
@@ -519,6 +549,7 @@ function _serialize() {
     transactions,
     contests: [...contests.entries()],
     participations,
+    assets: [...assets.entries()],
   }, _replacer)
 }
 
@@ -552,6 +583,7 @@ function restore() {
     contests.clear(); (data.contests || []).forEach(([k, v]) => contests.set(k, v))
     transactions.length = 0; transactions.push(...(data.transactions || []))
     participations.length = 0; participations.push(...(data.participations || []))
+    assets.clear(); (data.assets || []).forEach(([k, v]) => assets.set(k, v))
     _lastJson = _serialize()
     return users.size > 0 || portfolios.size > 0 || contests.size > 0
   } catch (err) {
@@ -610,6 +642,10 @@ module.exports = {
     getLeaderboard,
     concludeContest,
     getContestParticipants,
+  },
+  asset: {
+    createAsset,
+    getAsset,
   },
   users: {
     createUser,

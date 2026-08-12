@@ -8,7 +8,9 @@ const { BEANSTALK_SERVER_PORT } = process.env
 app.set('port', process.env.PORT || BEANSTALK_SERVER_PORT || 8080)
 
 app.use(express.urlencoded({ extended: true }))
-app.use(express.json())
+// 1mb (default 100kb) so base64 logo uploads (≤512KB decoded ≈ 700KB encoded)
+// fit through the JSON body parser.
+app.use(express.json({ limit: '1mb' }))
 app.use(cors())
 
 // ── Health check ──────────────────────────────────────────────
@@ -44,6 +46,12 @@ app.use('/api', require('./routes/web/clinicians.route'))    // mentors
 
 // ── Routes: auth (in-memory / test mode) ──────────────────────
 app.use('/api', require('./routes/api/auth.route'))
+
+// ── Routes: contest assets ────────────────────────────────────
+// Must stay ABOVE the market router: market.route.js runs `router.use(auth)`
+// for every /api/* request that reaches it, and GET /contest-assets/:id must
+// remain public (mobile image widgets can't send Authorization headers).
+app.use('/api', require('./routes/api/asset.route'))
 
 // ── Routes: shared ────────────────────────────────────────────
 app.use('/api', require('./routes/api/market.route'))        // Alpaca market data
