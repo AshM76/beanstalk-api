@@ -439,12 +439,72 @@ async function updateContest(req, res) {
   }
 }
 
+/**
+ * GET /api/contests/:contestId/messages
+ * Contest chat feed (any authenticated user; contests are public in the beta).
+ */
+async function getContestMessages(req, res) {
+  try {
+    if (typeof contestService.listContestMessages !== 'function') {
+      return res.status(501).json({ error: 'Contest chat is only available in demo mode' })
+    }
+    const { contestId } = req.params
+    const contest = await contestService.getContest(contestId)
+    if (!contest) return res.status(404).json({ error: 'Contest not found' })
+
+    const messages = await contestService.listContestMessages(contestId)
+    res.json({ count: messages.length, messages })
+  } catch (error) {
+    console.error('Contest messages fetch error:', error)
+    res.status(500).json({ error: 'Failed to fetch messages' })
+  }
+}
+
+/**
+ * POST /api/contests/:contestId/messages  { text }
+ * Username is resolved server-side from the authenticated user so clients
+ * can't impersonate each other.
+ */
+async function postContestMessage(req, res) {
+  try {
+    if (typeof contestService.createContestMessage !== 'function') {
+      return res.status(501).json({ error: 'Contest chat is only available in demo mode' })
+    }
+    const { contestId } = req.params
+    const text = (req.body && typeof req.body.text === 'string') ? req.body.text.trim() : ''
+    if (!text) return res.status(400).json({ error: 'Message text is required' })
+    if (text.length > 500) return res.status(400).json({ error: 'Message too long (max 500 chars)' })
+
+    const contest = await contestService.getContest(contestId)
+    if (!contest) return res.status(404).json({ error: 'Contest not found' })
+
+    let username = 'Player'
+    try {
+      const userService = require('../services/user.service')
+      const u = await userService.getUserById(req.user.user_id)
+      if (u && u.name) username = u.name
+    } catch (_) { /* keep fallback */ }
+
+    const msg = await contestService.createContestMessage(contestId, {
+      user_id: req.user.user_id,
+      username,
+      text,
+    })
+    res.status(201).json(msg)
+  } catch (error) {
+    console.error('Contest message post error:', error)
+    res.status(500).json({ error: 'Failed to post message' })
+  }
+}
+
 module.exports = {
   createContest,
   listContests,
   getContest,
   updateContest,
   joinContest,
+  getContestMessages,
+  postContestMessage,
   getLeaderboard,
   concludeContest,
   getContestParticipants,

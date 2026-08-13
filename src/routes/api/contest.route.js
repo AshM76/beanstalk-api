@@ -16,6 +16,8 @@ router.get('/contests/:contestId', contestController.getContest)
 router.put('/contests/:contestId', contestController.updateContest)
 router.get('/contests/:contestId/participants', contestController.getContestParticipants)
 router.post('/contests/:contestId/join', contestController.joinContest)
+router.get('/contests/:contestId/messages', contestController.getContestMessages)
+router.post('/contests/:contestId/messages', contestController.postContestMessage)
 router.get('/contests/:contestId/leaderboard', contestController.getLeaderboard)
 router.post('/contests/:contestId/conclude', contestController.concludeContest)
 

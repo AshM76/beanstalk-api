@@ -22,6 +22,7 @@ const transactions = []             // flat list of transaction rows
 const contests = new Map()          // contest_id -> contest
 const participations = []           // participation rows
 const assets = new Map()            // asset_id -> {content_type, data (base64), size, created_at}
+const contestMessages = new Map()   // contest_id -> [message rows, chronological]
 
 // ── Portfolio helpers ─────────────────────────────────────────
 
@@ -310,6 +311,36 @@ async function getAsset(id) {
   return assets.get(id) || null
 }
 
+// ── Contest chat ─────────────────────────────────────────────────────────────
+// Per-contest message feed. Capped so a chatty contest can't balloon the
+// volume snapshot; clients poll GET and the cap comfortably exceeds what a
+// phone screen shows.
+
+const MAX_MESSAGES_PER_CONTEST = 200
+
+async function listContestMessages(contestId, { limit = 200 } = {}) {
+  const rows = contestMessages.get(contestId) || []
+  return rows.slice(-Math.min(limit, MAX_MESSAGES_PER_CONTEST))
+}
+
+async function createContestMessage(contestId, { user_id, username, text }) {
+  const msg = {
+    message_id: uuidv4(),
+    contest_id: contestId,
+    user_id,
+    username,
+    text,
+    created_at: new Date(),
+  }
+  const rows = contestMessages.get(contestId) || []
+  rows.push(msg)
+  if (rows.length > MAX_MESSAGES_PER_CONTEST) {
+    rows.splice(0, rows.length - MAX_MESSAGES_PER_CONTEST)
+  }
+  contestMessages.set(contestId, rows)
+  return msg
+}
+
 // Mutable fields on a contest. Anything not in this list is silently ignored
 // by updateContest — including immutable identity/audit fields (contest_id,
 // creator_id, created_at) and derived counts (current_participants,
@@ -550,6 +581,7 @@ function _serialize() {
     contests: [...contests.entries()],
     participations,
     assets: [...assets.entries()],
+    contestMessages: [...contestMessages.entries()],
   }, _replacer)
 }
 
@@ -584,6 +616,7 @@ function restore() {
     transactions.length = 0; transactions.push(...(data.transactions || []))
     participations.length = 0; participations.push(...(data.participations || []))
     assets.clear(); (data.assets || []).forEach(([k, v]) => assets.set(k, v))
+    contestMessages.clear(); (data.contestMessages || []).forEach(([k, v]) => contestMessages.set(k, v))
     _lastJson = _serialize()
     return users.size > 0 || portfolios.size > 0 || contests.size > 0
   } catch (err) {
@@ -642,6 +675,8 @@ module.exports = {
     getLeaderboard,
     concludeContest,
     getContestParticipants,
+    listContestMessages,
+    createContestMessage,
   },
   asset: {
     createAsset,
