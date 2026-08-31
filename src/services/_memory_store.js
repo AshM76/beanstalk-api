@@ -686,6 +686,10 @@ module.exports = {
     createUser,
     getUserByEmail,
     getUserById,
+    setPasswordReset,
+    incrementResetAttempts,
+    clearPasswordReset,
+    updatePassword,
   },
 }
 
@@ -714,4 +718,46 @@ function getUserById(userId) {
   const u = users.get(userId)
   if (!u) return null
   return { user_id: u.user_id, name: u.name, email: u.email, avatar_url: u.avatar_url, created_at: u.created_at }
+}
+
+// ── Password reset ──────────────────────────────────────────────
+// The reset code hash + expiry live directly on the user object, so they ride
+// the periodic /data/store.json snapshot like any other field: snapshot()
+// re-serializes the whole store on a timer and writes only when the JSON
+// changed, so mutating a user here is enough to get it persisted.
+
+function setPasswordReset(userId, codeHash, expiresAt) {
+  const u = users.get(userId)
+  if (!u) return false
+  u.reset_code_hash = codeHash
+  u.reset_expires_at = expiresAt instanceof Date ? expiresAt : new Date(expiresAt)
+  u.reset_attempts = 0
+  return true
+}
+
+function incrementResetAttempts(userId) {
+  const u = users.get(userId)
+  if (!u) return 0
+  u.reset_attempts = (u.reset_attempts || 0) + 1
+  return u.reset_attempts
+}
+
+function clearPasswordReset(userId) {
+  const u = users.get(userId)
+  if (!u) return false
+  delete u.reset_code_hash
+  delete u.reset_expires_at
+  delete u.reset_attempts
+  return true
+}
+
+function updatePassword(userId, passwordHash) {
+  const u = users.get(userId)
+  if (!u) return false
+  u.password_hash = passwordHash
+  // A successful reset consumes the code.
+  delete u.reset_code_hash
+  delete u.reset_expires_at
+  delete u.reset_attempts
+  return true
 }

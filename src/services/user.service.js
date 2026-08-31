@@ -61,7 +61,9 @@ function rowToPublicUser(row) {
   }
 }
 
-// Full shape — includes password_hash; only used by login/auth paths.
+// Full shape — includes password_hash; only used by login/auth paths. Reset
+// state is deliberately NOT here: getUserByEmail is the login/register hot path
+// and must not depend on the migration-009 columns existing (see getResetState).
 function rowToAuthUser(row) {
   if (!row) return null
   return {
@@ -171,6 +173,102 @@ async function getUserByEmail(email) {
   return rowToAuthUser(rows[0] || null)
 }
 
+// ── Password reset (BigQuery) ─────────────────────────────────────────────
+// Columns added in migrations/009_add_password_reset.sql. These are kept out of
+// getUserByEmail on purpose: only the reset flow (which requires the migration
+// anyway) reads/writes them, so login and register keep working even if the
+// code is deployed a moment before the migration is applied.
+
+// Reset-state lookup for the reset flow. Includes account_status so a
+// suspended/deleted account can't obtain a fresh token via reset.
+async function getResetState(email) {
+  const normalized = (email || '').toLowerCase().trim()
+  if (!normalized) return null
+
+  const query = `
+    SELECT user_id, name, email, avatar_url, created_at, account_status,
+           password_reset_code_hash, password_reset_expires_at,
+           password_reset_attempts
+      FROM ${USERS_TABLE}
+     WHERE email = @email
+     LIMIT 1
+  `
+
+  const [rows] = await bigquery.query({ query, params: { email: normalized } })
+  const row = rows[0]
+  if (!row) return null
+  return {
+    user_id: row.user_id,
+    name: row.name,
+    email: row.email,
+    avatar_url: row.avatar_url || null,
+    created_at: unwrapDatetime(row.created_at),
+    account_status: row.account_status || 'active',
+    reset_code_hash: row.password_reset_code_hash || null,
+    reset_expires_at: unwrapDatetime(row.password_reset_expires_at),
+    reset_attempts: row.password_reset_attempts || 0,
+  }
+}
+
+async function setPasswordReset(userId, codeHash, expiresAt) {
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_reset_code_hash = @code_hash,
+           password_reset_expires_at = DATETIME(@expires_at),
+           password_reset_attempts = 0,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({
+    query,
+    params: {
+      user_id: userId,
+      code_hash: codeHash,
+      expires_at: toBqDatetime(expiresAt),
+      now: toBqDatetime(new Date()),
+    },
+  })
+}
+
+async function incrementResetAttempts(userId) {
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_reset_attempts = IFNULL(password_reset_attempts, 0) + 1,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({ query, params: { user_id: userId, now: toBqDatetime(new Date()) } })
+}
+
+async function clearPasswordReset(userId) {
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_reset_code_hash = NULL,
+           password_reset_expires_at = NULL,
+           password_reset_attempts = 0,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({ query, params: { user_id: userId, now: toBqDatetime(new Date()) } })
+}
+
+async function updatePassword(userId, passwordHash) {
+  // Setting the new hash also consumes the reset code.
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_hash = @password_hash,
+           password_reset_code_hash = NULL,
+           password_reset_expires_at = NULL,
+           password_reset_attempts = 0,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({
+    query,
+    params: { user_id: userId, password_hash: passwordHash, now: toBqDatetime(new Date()) },
+  })
+}
+
 /**
  * Lookup by user_id. Returns the public shape (no password_hash).
  */
@@ -220,6 +318,11 @@ module.exports = {
   getUserByEmail,
   getUserById,
   recordLogin,
+  getResetState,
+  setPasswordReset,
+  incrementResetAttempts,
+  clearPasswordReset,
+  updatePassword,
 }
 
 // Dev/test bypass: when running without GCP credentials, back the service
@@ -242,6 +345,14 @@ if (['test', 'demo'].includes(process.env.BEANSTALK_ENVIRONMENT)) {
     getUserByEmail: async (email) => mem.getUserByEmail(email),
     getUserById: async (userId) => mem.getUserById(userId),
     recordLogin: async () => {},
+    // The raw in-memory user carries reset fields + (optional) account_status,
+    // so it already satisfies the reset-state shape.
+    getResetState: async (email) => mem.getUserByEmail(email),
+    setPasswordReset: async (userId, codeHash, expiresAt) =>
+      mem.setPasswordReset(userId, codeHash, expiresAt),
+    incrementResetAttempts: async (userId) => mem.incrementResetAttempts(userId),
+    clearPasswordReset: async (userId) => mem.clearPasswordReset(userId),
+    updatePassword: async (userId, passwordHash) => mem.updatePassword(userId, passwordHash),
   }
   console.log('[Beanstalk] :: user.service → in-memory store (test mode)')
 }
