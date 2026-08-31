@@ -157,6 +157,16 @@ async function forgotPassword(req, res) {
       })
     }
 
+    // Prod without a working mailer: the request looks successful but the user
+    // will never get the code. Log loudly so the misconfiguration is visible
+    // (we still don't leak the code in the response outside demo).
+    if (!emailed) {
+      console.error(
+        '[auth/forgotPassword] reset code generated but NOT delivered ' +
+          '(mailer not configured); user_id=' + user.user_id,
+      )
+    }
+
     return res.json(generic)
   } catch (error) {
     console.error('[auth/forgotPassword]', error.message)
@@ -178,7 +188,7 @@ async function resetPassword(req, res) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' })
     }
 
-    const user = await userService.getUserByEmail(email)
+    const user = await userService.getResetState(email)
     const invalid = () => res.status(400).json({ error: 'Invalid or expired reset code' })
 
     if (!user || !user.reset_code_hash || !user.reset_expires_at) return invalid()
@@ -201,6 +211,14 @@ async function resetPassword(req, res) {
     if (!ok) {
       await userService.incrementResetAttempts(user.user_id)
       return invalid()
+    }
+
+    // Only reachable with a valid code (so this doesn't leak status to anyone
+    // probing), but a suspended/deleted account must not regain a session via
+    // reset. Consume the code so it can't be retried.
+    if (user.account_status && user.account_status !== 'active') {
+      await userService.clearPasswordReset(user.user_id)
+      return res.status(403).json({ error: 'This account is not active. Contact support.' })
     }
 
     const newHash = await bcrypt.hash(password, SALT_ROUNDS)

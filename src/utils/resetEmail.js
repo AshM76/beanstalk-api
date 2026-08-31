@@ -1,9 +1,11 @@
 /**
  * Best-effort password-reset email sender.
  *
- * Reuses the same Gmail/nodemailer configuration as validationEmail.js, but is
- * deliberately fail-soft: if SMTP credentials aren't configured (e.g. the demo
- * env, which has BEANSTALK_ACCOUNT_EMAIL but no BEANSTALK_ACCOUNT_PASS), it
+ * Mirrors the Gmail/nodemailer configuration used by validationEmail.js — kept
+ * as a small separate transport rather than shared, to avoid touching that
+ * working flow — but is deliberately fail-soft: if SMTP credentials aren't
+ * configured (e.g. the demo env, which has BEANSTALK_ACCOUNT_EMAIL but no
+ * BEANSTALK_ACCOUNT_PASS), it
  * returns false instead of throwing. The auth controller then falls back to
  * returning the code in the response (demo only). Wire up BEANSTALK_ACCOUNT_PASS
  * (a Gmail app password) and real emails start sending with no code change.

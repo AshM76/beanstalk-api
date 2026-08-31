@@ -722,8 +722,9 @@ function getUserById(userId) {
 
 // ── Password reset ──────────────────────────────────────────────
 // The reset code hash + expiry live directly on the user object, so they ride
-// the periodic /data/store.json snapshot like any other field (the snapshot is
-// diff-based, so mutating a user here is enough to get it persisted).
+// the periodic /data/store.json snapshot like any other field: snapshot()
+// re-serializes the whole store on a timer and writes only when the JSON
+// changed, so mutating a user here is enough to get it persisted.
 
 function setPasswordReset(userId, codeHash, expiresAt) {
   const u = users.get(userId)

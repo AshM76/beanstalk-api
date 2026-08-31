@@ -148,4 +148,24 @@ describe('POST /api/auth/password/reset', () => {
     const res = await request(app).post('/api/auth/password/reset').send({ email: uniqueEmail() })
     expect(res.status).toBe(400)
   })
+
+  test('a suspended account cannot regain a session via reset (even with a valid code)', async () => {
+    const email = uniqueEmail()
+    await registerUser(email, 'origpass1')
+
+    // Reach into the store and suspend the account (there's no API to do this
+    // in demo mode; the raw user object is the live record).
+    const mem = require('../src/services/_memory_store').users
+    mem.getUserByEmail(email).account_status = 'suspended'
+
+    const forgot = await request(app).post('/api/auth/password/forgot').send({ email })
+    const reset = await request(app)
+      .post('/api/auth/password/reset')
+      .send({ email, code: forgot.body.dev_code, password: 'newpass2' })
+    expect(reset.status).toBe(403)
+
+    // Password was not changed — the original still works.
+    const login = await request(app).post('/api/auth/login').send({ email, password: 'origpass1' })
+    expect(login.status).toBe(200)
+  })
 })
