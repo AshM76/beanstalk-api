@@ -61,12 +61,16 @@ function rowToPublicUser(row) {
   }
 }
 
-// Full shape — includes password_hash; only used by login/auth paths.
+// Full shape — includes password_hash and password-reset state; only used by
+// login/auth + password-reset paths.
 function rowToAuthUser(row) {
   if (!row) return null
   return {
     ...rowToPublicUser(row),
     password_hash: row.password_hash,
+    reset_code_hash: row.password_reset_code_hash || null,
+    reset_expires_at: unwrapDatetime(row.password_reset_expires_at),
+    reset_attempts: row.password_reset_attempts || 0,
   }
 }
 
@@ -157,7 +161,9 @@ async function getUserByEmail(email) {
 
   const query = `
     SELECT user_id, name, email, password_hash, avatar_url, role, age_group,
-           account_status, email_verified, created_at
+           account_status, email_verified, created_at,
+           password_reset_code_hash, password_reset_expires_at,
+           password_reset_attempts
       FROM ${USERS_TABLE}
      WHERE email = @email
      LIMIT 1
@@ -169,6 +175,68 @@ async function getUserByEmail(email) {
   })
 
   return rowToAuthUser(rows[0] || null)
+}
+
+// ── Password reset (BigQuery) ─────────────────────────────────────────────
+// Columns added in migrations/009_add_password_reset.sql.
+
+async function setPasswordReset(userId, codeHash, expiresAt) {
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_reset_code_hash = @code_hash,
+           password_reset_expires_at = DATETIME(@expires_at),
+           password_reset_attempts = 0,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({
+    query,
+    params: {
+      user_id: userId,
+      code_hash: codeHash,
+      expires_at: toBqDatetime(expiresAt),
+      now: toBqDatetime(new Date()),
+    },
+  })
+}
+
+async function incrementResetAttempts(userId) {
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_reset_attempts = IFNULL(password_reset_attempts, 0) + 1,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({ query, params: { user_id: userId, now: toBqDatetime(new Date()) } })
+}
+
+async function clearPasswordReset(userId) {
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_reset_code_hash = NULL,
+           password_reset_expires_at = NULL,
+           password_reset_attempts = 0,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({ query, params: { user_id: userId, now: toBqDatetime(new Date()) } })
+}
+
+async function updatePassword(userId, passwordHash) {
+  // Setting the new hash also consumes the reset code.
+  const query = `
+    UPDATE ${USERS_TABLE}
+       SET password_hash = @password_hash,
+           password_reset_code_hash = NULL,
+           password_reset_expires_at = NULL,
+           password_reset_attempts = 0,
+           updated_at = DATETIME(@now)
+     WHERE user_id = @user_id
+  `
+  await bigquery.query({
+    query,
+    params: { user_id: userId, password_hash: passwordHash, now: toBqDatetime(new Date()) },
+  })
 }
 
 /**
@@ -220,6 +288,10 @@ module.exports = {
   getUserByEmail,
   getUserById,
   recordLogin,
+  setPasswordReset,
+  incrementResetAttempts,
+  clearPasswordReset,
+  updatePassword,
 }
 
 // Dev/test bypass: when running without GCP credentials, back the service
@@ -242,6 +314,11 @@ if (['test', 'demo'].includes(process.env.BEANSTALK_ENVIRONMENT)) {
     getUserByEmail: async (email) => mem.getUserByEmail(email),
     getUserById: async (userId) => mem.getUserById(userId),
     recordLogin: async () => {},
+    setPasswordReset: async (userId, codeHash, expiresAt) =>
+      mem.setPasswordReset(userId, codeHash, expiresAt),
+    incrementResetAttempts: async (userId) => mem.incrementResetAttempts(userId),
+    clearPasswordReset: async (userId) => mem.clearPasswordReset(userId),
+    updatePassword: async (userId, passwordHash) => mem.updatePassword(userId, passwordHash),
   }
   console.log('[Beanstalk] :: user.service → in-memory store (test mode)')
 }
