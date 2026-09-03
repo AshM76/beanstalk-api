@@ -54,4 +54,11 @@ async function sendPasswordResetEmail(email, code) {
   }
 }
 
-module.exports = { sendPasswordResetEmail }
+// Synchronous check of whether SMTP credentials are present, without building a
+// transport or sending. Lets the caller decide the demo dev_code fallback and
+// whether to fire an email, without awaiting the (variable-latency) send.
+function isMailerConfigured() {
+  return Boolean(BEANSTALK_ACCOUNT_EMAIL && BEANSTALK_ACCOUNT_PASS)
+}
+
+module.exports = { sendPasswordResetEmail, isMailerConfigured }

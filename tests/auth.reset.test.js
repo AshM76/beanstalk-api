@@ -59,6 +59,25 @@ describe('POST /api/auth/password/forgot', () => {
     const res = await request(app).post('/api/auth/password/forgot').send({})
     expect(res.status).toBe(400)
   })
+
+  test('both registered and unknown emails hit the response-time floor (anti-enumeration)', async () => {
+    const email = uniqueEmail()
+    await registerUser(email, 'origpass1')
+
+    const timeIt = async (payload) => {
+      const t = Date.now()
+      await request(app).post('/api/auth/password/forgot').send(payload)
+      return Date.now() - t
+    }
+
+    const knownMs = await timeIt({ email })
+    const unknownMs = await timeIt({ email: uniqueEmail() })
+
+    // The floor is 350ms; both paths must be padded up to it (small tolerance
+    // for timer/scheduling slack), so the miss path is no longer instant.
+    expect(knownMs).toBeGreaterThanOrEqual(300)
+    expect(unknownMs).toBeGreaterThanOrEqual(300)
+  })
 })
 
 describe('POST /api/auth/password/reset', () => {
