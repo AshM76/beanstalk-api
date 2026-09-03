@@ -10,9 +10,17 @@ const bcrypt = require('bcryptjs')
 const { createToken } = require('../services')
 const userService = require('../services/user.service')
 const { generateResetCode, CODE_TTL_MS, MAX_ATTEMPTS } = require('../utils/passwordReset')
-const { sendPasswordResetEmail } = require('../utils/resetEmail')
+const { sendPasswordResetEmail, isMailerConfigured } = require('../utils/resetEmail')
 
 const SALT_ROUNDS = 10
+
+// Anti-enumeration: forgot-password pads every post-validation response to this
+// floor so the response time can't reveal whether an email is registered. Set
+// above the cost of the work done on a hit (a cost-10 bcrypt + a store write is
+// well under this), so both the hit and miss paths land at ~the same latency.
+const FORGOT_MIN_RESPONSE_MS = 350
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // In demo/test the mailer has no SMTP credentials, so the reset code can't be
 // delivered by email. Only in those environments do we return it in the API
@@ -124,6 +132,15 @@ async function me(req, res) {
 // Body: { email }. Always returns 200 with a generic message so the endpoint
 // can't be used to probe which emails are registered.
 async function forgotPassword(req, res) {
+  const started = Date.now()
+  // Pad every post-validation response to the floor so timing is constant
+  // regardless of which branch ran.
+  const respond = async (body, status = 200) => {
+    const remaining = FORGOT_MIN_RESPONSE_MS - (Date.now() - started)
+    if (remaining > 0) await sleep(remaining)
+    return res.status(status).json(body)
+  }
+
   try {
     const { email } = req.body
     if (!email) {
@@ -133,23 +150,41 @@ async function forgotPassword(req, res) {
     const generic = {
       message: 'If an account exists for that email, a reset code has been sent.',
     }
+    const mailerReady = isMailerConfigured()
 
     const user = await userService.getUserByEmail(email)
-    if (!user) return res.json(generic)
+
+    if (!user) {
+      // Do equivalent bcrypt work so the miss path isn't measurably cheaper than
+      // the hit path; the response floor above then masks any residual jitter.
+      await bcrypt.hash('enumeration-guard-dummy', SALT_ROUNDS).catch(() => {})
+      return respond(generic)
+    }
 
     const code = generateResetCode()
     const codeHash = await bcrypt.hash(code, SALT_ROUNDS)
     const expiresAt = new Date(Date.now() + CODE_TTL_MS)
     await userService.setPasswordReset(user.user_id, codeHash, expiresAt)
 
-    // Best-effort email — never blocks or fails the request. Resolves false if
-    // the mailer isn't configured (e.g. demo env without SMTP creds).
-    const emailed = await sendPasswordResetEmail(user.email, code).catch(() => false)
+    // Fire the email OFF the critical path: its variable SMTP latency must not
+    // feed back into the response time (and it's best-effort anyway).
+    if (mailerReady) {
+      sendPasswordResetEmail(user.email, code).catch((e) =>
+        console.error('[auth/forgotPassword] email send failed:', e.message),
+      )
+    } else if (!IS_DEMO_ENV) {
+      // Prod without a working mailer: the request looks successful but the user
+      // will never get the code. Log loudly so the misconfiguration is visible.
+      console.error(
+        '[auth/forgotPassword] reset code generated but NOT delivered ' +
+          '(mailer not configured); user_id=' + user.user_id,
+      )
+    }
 
-    // Demo/test convenience ONLY: when we couldn't email the code, hand it back
-    // in the response so the reset flow is usable without SMTP.
-    if (IS_DEMO_ENV && !emailed) {
-      return res.json({
+    // Demo/test convenience ONLY: when email isn't configured, hand the code
+    // back so the flow is usable without SMTP. Never outside demo/test.
+    if (IS_DEMO_ENV && !mailerReady) {
+      return respond({
         ...generic,
         dev_code: code,
         dev_note:
@@ -157,20 +192,12 @@ async function forgotPassword(req, res) {
       })
     }
 
-    // Prod without a working mailer: the request looks successful but the user
-    // will never get the code. Log loudly so the misconfiguration is visible
-    // (we still don't leak the code in the response outside demo).
-    if (!emailed) {
-      console.error(
-        '[auth/forgotPassword] reset code generated but NOT delivered ' +
-          '(mailer not configured); user_id=' + user.user_id,
-      )
-    }
-
-    return res.json(generic)
+    return respond(generic)
   } catch (error) {
     console.error('[auth/forgotPassword]', error.message)
-    res.status(500).json({ error: 'Could not process password reset request' })
+    // Pad the error path too, so a thrown error on a real account (e.g. a DB
+    // blip) doesn't become its own timing tell.
+    return respond({ error: 'Could not process password reset request' }, 500)
   }
 }
 
