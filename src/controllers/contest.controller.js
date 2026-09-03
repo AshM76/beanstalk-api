@@ -129,6 +129,11 @@ async function listContests(req, res) {
         participants: c.current_participants,
         max_participants: c.max_participants,
         starting_balance: c.starting_balance,
+        // Prizes are read by the mobile contest list (Contest.fromApi builds the
+        // Prize tile from prizes[0]). Without these here the app showed a dash
+        // even when a prize was set — the detail endpoint already returns them.
+        prizes: c.prizes || [],
+        total_prize_pool: c.total_prize_pool || null,
         short_name: c.short_name || null,
         timezone: c.timezone || null,
         sponsor_name: c.sponsor_name || null,
