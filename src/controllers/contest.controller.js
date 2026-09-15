@@ -7,6 +7,61 @@ const contestService = require('../services/contest.service')
 const portfolioService = require('../services/portfolio.service')
 const alpacaService = require('../services/alpaca.service')
 
+// ── Learning-gate entry requirements ─────────────────────────────────────────
+// A contest can gate joining on learning progress: a minimum total XP and/or a
+// set of lessons that must be passed (see migration 010). The wire contract is
+// a single nested object so clients get one clean shape:
+//
+//   "entry_requirements": { "min_xp": 300, "required_lessons": ["l5","l6"] }
+//
+// Internally the service persists two flat columns (entry_min_xp,
+// entry_required_lessons). These helpers translate between the two: normalize
+// an incoming request body into the flat service fields, and build the nested
+// object for responses. Both requirements are optional and combinable;
+// min_xp = 0 with no required_lessons means the contest is open (no gate).
+//
+// The gate itself is enforced client-side (the mobile app compares this rule
+// against the user's local lesson progress); the server is the source of truth
+// for the rule. If enforcement later moves server-side, the join endpoint can
+// read these same fields — no schema change needed.
+
+/** Pull entry-requirement fields out of a request body into flat service fields.
+ *  Accepts the nested `entry_requirements` object (preferred) or flat fields.
+ *  Returns only the keys that were present, so it composes with partial updates. */
+function normalizeEntryRequirements(body = {}) {
+  const out = {}
+  const er = body.entry_requirements
+  if (er && typeof er === 'object') {
+    if ('min_xp' in er) out.entry_min_xp = toMinXp(er.min_xp)
+    if ('required_lessons' in er) out.entry_required_lessons = toLessonIds(er.required_lessons)
+  }
+  // Flat fields override / stand in for the nested object when sent directly.
+  if ('entry_min_xp' in body) out.entry_min_xp = toMinXp(body.entry_min_xp)
+  if ('entry_required_lessons' in body) {
+    out.entry_required_lessons = toLessonIds(body.entry_required_lessons)
+  }
+  return out
+}
+
+/** Build the nested response shape from a stored contest's flat fields. */
+function entryRequirementsOf(contest) {
+  return {
+    min_xp: contest.entry_min_xp ?? 0,
+    required_lessons: contest.entry_required_lessons || [],
+  }
+}
+
+function toMinXp(v) {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+}
+
+function toLessonIds(v) {
+  if (!Array.isArray(v)) return []
+  // Keep only well-formed, de-duplicated lesson-id strings (e.g. "l5").
+  return [...new Set(v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()))]
+}
+
 /**
  * POST /api/contests
  * Create a new contest (admin/contest manager only)
@@ -70,6 +125,8 @@ async function createContest(req, res) {
       // Pass through if provided; service defaults to 'draft' otherwise and
       // rejects unknown values.
       ...(status ? { status } : {}),
+      // Learning-gate entry requirements (min XP and/or lessons to pass).
+      ...normalizeEntryRequirements(req.body),
     }
 
     const contest = await contestService.createContest(req.user.user_id, contestData)
@@ -80,6 +137,7 @@ async function createContest(req, res) {
       status: contest.status,
       age_groups: contest.age_groups,
       starting_balance: contest.starting_balance,
+      entry_requirements: entryRequirementsOf(contest),
       short_name: contest.short_name || null,
       timezone: contest.timezone || null,
       sponsor_name: contest.sponsor_name || null,
@@ -134,6 +192,9 @@ async function listContests(req, res) {
         // even when a prize was set — the detail endpoint already returns them.
         prizes: c.prizes || [],
         total_prize_pool: c.total_prize_pool || null,
+        // Learning-gate rule so the mobile list can lock the Join button and
+        // show what's needed before the user opens the contest detail.
+        entry_requirements: entryRequirementsOf(c),
         short_name: c.short_name || null,
         timezone: c.timezone || null,
         sponsor_name: c.sponsor_name || null,
@@ -180,6 +241,7 @@ async function getContest(req, res) {
       participants: contest.current_participants,
       max_participants: contest.max_participants,
       prizes: contest.prizes,
+      entry_requirements: entryRequirementsOf(contest),
       visibility: contest.visibility,
       short_name: contest.short_name || null,
       timezone: contest.timezone || null,
@@ -430,10 +492,15 @@ async function updateContest(req, res) {
       return res.status(400).json({ error: 'start_date must be before end_date' })
     }
 
+    // Translate a nested `entry_requirements` object (if sent) into the flat
+    // service fields; only present keys are set, so a partial update that
+    // omits entry_requirements leaves the existing gate untouched.
+    Object.assign(updates, normalizeEntryRequirements(req.body))
+
     const contest = await contestService.updateContest(contestId, updates)
     if (!contest) return res.status(404).json({ error: 'Contest not found' })
 
-    res.json(contest)
+    res.json({ ...contest, entry_requirements: entryRequirementsOf(contest) })
   } catch (error) {
     console.error('Contest update error:', error)
     // Validation errors from the service (e.g. invalid status) surface as 400.

@@ -264,6 +264,10 @@ async function createContest(creatorId, data) {
     max_participants: data.max_participants || null,
     current_participants: 0,
     min_participants: data.min_participants || 2,
+    // Learning-gate entry requirements (mirrors migration 010 on the BQ store).
+    // Both optional and combinable; null/empty = contest open to any eligible user.
+    entry_min_xp: data.entry_min_xp ?? null,
+    entry_required_lessons: data.entry_required_lessons || [],
     prizes: data.prizes || [],
     total_prize_pool: calculateTotalPrizePool(data.prizes),
     status,
@@ -362,6 +366,8 @@ const CONTEST_MUTABLE_FIELDS = new Set([
   'allowed_asset_classes',
   'max_participants',
   'min_participants',
+  'entry_min_xp',
+  'entry_required_lessons',
   'prizes',
   'status',
   'visibility',

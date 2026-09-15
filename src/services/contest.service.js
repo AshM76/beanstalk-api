@@ -75,6 +75,11 @@ function rowToContest(row) {
     max_participants: row.max_participants,
     current_participants: row.current_participants ?? 0,
     min_participants: row.min_participants,
+    // Learning-gate entry requirements (migration 010). Null/empty = open.
+    entry_min_xp: row.entry_min_xp === null || row.entry_min_xp === undefined
+      ? null
+      : Number(row.entry_min_xp),
+    entry_required_lessons: row.entry_required_lessons || [],
     prizes: (row.prizes || []).map(p => ({
       rank_from: p.rank_from,
       rank_to: p.rank_to,
@@ -144,6 +149,10 @@ async function createContest(creatorId, contestData) {
     max_participants: contestData.max_participants || null,
     current_participants: 0,
     min_participants: contestData.min_participants || 2,
+    // Learning-gate entry requirements (see migration 010). Both optional and
+    // combinable; null/empty means the contest is open to any eligible user.
+    entry_min_xp: contestData.entry_min_xp ?? null,
+    entry_required_lessons: contestData.entry_required_lessons || [],
     prizes: contestData.prizes || [],
     total_prize_pool: calculateTotalPrizePool(contestData.prizes || []),
     status: 'draft',
@@ -483,6 +492,7 @@ async function saveContestToDatabase(contest) {
       allow_shorting, allow_margin,
       max_position_size_percent, allowed_asset_classes,
       max_participants, current_participants, min_participants,
+      entry_min_xp, entry_required_lessons,
       prizes, total_prize_pool,
       status, visibility, winners_announced,
       concluded_at, created_at, updated_at
@@ -495,6 +505,7 @@ async function saveContestToDatabase(contest) {
       @allow_shorting, @allow_margin,
       @max_position_size_percent, @allowed_asset_classes,
       @max_participants, @current_participants, @min_participants,
+      @entry_min_xp, @entry_required_lessons,
       @prizes, @total_prize_pool,
       @status, @visibility, @winners_announced,
       IF(@concluded_at IS NULL, NULL, DATETIME(@concluded_at)),
@@ -521,6 +532,8 @@ async function saveContestToDatabase(contest) {
     max_participants: contest.max_participants ?? null,
     current_participants: contest.current_participants ?? 0,
     min_participants: contest.min_participants ?? null,
+    entry_min_xp: contest.entry_min_xp ?? null,
+    entry_required_lessons: contest.entry_required_lessons || [],
     prizes: contest.prizes || [],
     total_prize_pool: contest.total_prize_pool ?? 0,
     status: contest.status,
@@ -538,6 +551,8 @@ async function saveContestToDatabase(contest) {
     max_position_size_percent: 'NUMERIC',
     max_participants: 'INT64',
     min_participants: 'INT64',
+    entry_min_xp: 'INT64',
+    entry_required_lessons: ['STRING'],
     concluded_at: 'STRING',
     age_groups: ['STRING'],
     allowed_asset_classes: ['STRING'],
@@ -680,6 +695,8 @@ async function updateContestInDatabase(contest) {
       max_participants          = @max_participants,
       current_participants      = @current_participants,
       min_participants          = @min_participants,
+      entry_min_xp              = @entry_min_xp,
+      entry_required_lessons    = @entry_required_lessons,
       prizes                    = @prizes,
       total_prize_pool          = @total_prize_pool,
       status                    = @status,
@@ -708,6 +725,8 @@ async function updateContestInDatabase(contest) {
     max_participants: contest.max_participants ?? null,
     current_participants: contest.current_participants ?? 0,
     min_participants: contest.min_participants ?? null,
+    entry_min_xp: contest.entry_min_xp ?? null,
+    entry_required_lessons: contest.entry_required_lessons || [],
     prizes: contest.prizes || [],
     total_prize_pool: contest.total_prize_pool ?? 0,
     status: contest.status,
@@ -724,6 +743,8 @@ async function updateContestInDatabase(contest) {
     max_position_size_percent: 'NUMERIC',
     max_participants: 'INT64',
     min_participants: 'INT64',
+    entry_min_xp: 'INT64',
+    entry_required_lessons: ['STRING'],
     concluded_at: 'STRING',
     age_groups: ['STRING'],
     allowed_asset_classes: ['STRING'],
@@ -827,6 +848,7 @@ const CONTEST_MUTABLE_FIELDS = new Set([
   'start_date', 'end_date', 'registration_deadline', 'rules', 'starting_balance',
   'allow_shorting', 'allow_margin', 'max_position_size_percent',
   'allowed_asset_classes', 'max_participants', 'min_participants', 'prizes',
+  'entry_min_xp', 'entry_required_lessons',
   'status', 'visibility',
 ])
 
