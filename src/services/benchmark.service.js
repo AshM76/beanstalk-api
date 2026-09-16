@@ -37,9 +37,9 @@ const SAVINGS_APY = 0.04 // 4.0% APY
 const GHOST_BENCHMARKS = [
   { id: 'ghost:spx',  username: 'Sammy P.',     symbol: 'SPY', label: 'S&P 500',      active: true },
   { id: 'ghost:cash', username: 'Piggy',        apy: SAVINGS_APY, label: 'Savings',    active: true },
-  { id: 'ghost:dow',  username: 'Downey Jones', symbol: 'DIA', label: 'Dow Jones',    active: false },
-  { id: 'ghost:ndx',  username: 'Nadia Q.',     symbol: 'QQQ', label: 'NASDAQ-100',   active: false },
-  { id: 'ghost:rut',  username: 'Rusty',        symbol: 'IWM', label: 'Russell 2000', active: false },
+  { id: 'ghost:dow',  username: 'Downey Jones', symbol: 'DIA', label: 'Dow Jones',    active: true },
+  { id: 'ghost:ndx',  username: 'Nadia Q.',     symbol: 'QQQ', label: 'NASDAQ-100',   active: true },
+  { id: 'ghost:rut',  username: 'Rusty',        symbol: 'IWM', label: 'Russell 2000', active: true },
 ]
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
