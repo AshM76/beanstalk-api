@@ -977,6 +977,79 @@ async function saveContestRecap(recap) {
   }
 }
 
+// ── Personal (per-kid) contest recap ──────────────────────────
+// One row per (contest, user), stored in `contest_recap_personal`
+// (migration 012). Same JSON-string body pattern as the group recap.
+
+const PERSONAL_RECAP_TABLE = `\`${BEANSTALK_GCP_BIGQUERY_PROJECTID}.${DATASET}.contest_recap_personal\``
+
+async function getPersonalRecap(contestId, userId) {
+  const query = `
+    SELECT contest_id, user_id, recap_json, model, generated_at, created_at, updated_at
+    FROM ${PERSONAL_RECAP_TABLE}
+    WHERE contest_id = @contest_id AND user_id = @user_id
+    LIMIT 1
+  `
+  const rows = await runQuery(query, { contest_id: contestId, user_id: userId })
+  if (rows.length === 0) return null
+  const r = rows[0]
+  let recap = null
+  try {
+    recap = r.recap_json ? JSON.parse(r.recap_json) : null
+  } catch (_) {
+    recap = null
+  }
+  return {
+    contest_id: r.contest_id,
+    user_id: r.user_id,
+    recap,
+    model: r.model || null,
+    generated_at: unwrapDatetime(r.generated_at),
+    created_at: unwrapDatetime(r.created_at),
+    updated_at: unwrapDatetime(r.updated_at),
+  }
+}
+
+async function savePersonalRecap(recap) {
+  if (!recap || !recap.contest_id || !recap.user_id) {
+    throw new Error('savePersonalRecap: contest_id and user_id required')
+  }
+  const now = new Date()
+  const existing = await getPersonalRecap(recap.contest_id, recap.user_id)
+  const createdAt = existing ? existing.created_at : now
+
+  await runQuery(
+    `DELETE FROM ${PERSONAL_RECAP_TABLE} WHERE contest_id = @contest_id AND user_id = @user_id`,
+    { contest_id: recap.contest_id, user_id: recap.user_id },
+  )
+
+  const query = `
+    INSERT INTO ${PERSONAL_RECAP_TABLE} (
+      contest_id, user_id, recap_json, model, generated_at, created_at, updated_at
+    ) VALUES (
+      @contest_id, @user_id, @recap_json, @model,
+      IF(@generated_at IS NULL, NULL, DATETIME(@generated_at)),
+      DATETIME(@created_at), DATETIME(@updated_at)
+    )
+  `
+  const params = {
+    contest_id: recap.contest_id,
+    user_id: recap.user_id,
+    recap_json: recap.recap ? JSON.stringify(recap.recap) : null,
+    model: recap.model || null,
+    generated_at: toBqDatetime(recap.generated_at),
+    created_at: toBqDatetime(createdAt),
+    updated_at: toBqDatetime(now),
+  }
+  const types = {
+    contest_id: 'STRING', user_id: 'STRING', recap_json: 'STRING', model: 'STRING',
+    generated_at: 'STRING', created_at: 'STRING', updated_at: 'STRING',
+  }
+  await runQuery(query, params, types)
+
+  return { ...recap, created_at: createdAt, updated_at: now }
+}
+
 module.exports = {
   createContest,
   getContest,
@@ -988,6 +1061,8 @@ module.exports = {
   getContestParticipants,
   getContestRecap,
   saveContestRecap,
+  getPersonalRecap,
+  savePersonalRecap,
 }
 
 // Dev/test bypass: when running without GCP credentials, back the service with
