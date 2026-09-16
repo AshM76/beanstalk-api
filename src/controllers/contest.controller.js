@@ -446,6 +446,25 @@ async function getLeaderboard(req, res) {
 }
 
 /**
+ * Fire-and-forget: auto-generate the Cash recap DRAFT for a concluded contest.
+ *
+ * Best-effort by design — a recap or model failure must never affect concluding
+ * the contest, and it only creates a `draft` (an admin still reviews/publishes).
+ * `generateRecap` is idempotent, so this no-ops if a recap already exists.
+ *
+ * Skipped when RECAP_AUTO_GENERATE is disabled, or when there's no
+ * ANTHROPIC_API_KEY (test/demo) so it never attempts a network call there.
+ */
+function maybeAutoGenerateRecap(contestId) {
+  if (process.env.RECAP_AUTO_GENERATE === 'false' || process.env.RECAP_AUTO_GENERATE === '0') return
+  if (!process.env.ANTHROPIC_API_KEY) return
+  Promise.resolve()
+    .then(() => recapService.generateRecap(contestId))
+    .then(() => console.log(`[recap] auto-generated draft for concluded contest ${contestId}`))
+    .catch(err => console.error(`[recap] auto-generate on conclude failed for ${contestId}:`, err.message))
+}
+
+/**
  * POST /api/contests/:contestId/conclude
  * Conclude contest and assign prizes (admin only)
  */
@@ -459,6 +478,11 @@ async function concludeContest(req, res) {
     const { contestId } = req.params
 
     const result = await contestService.concludeContest(contestId)
+
+    // Kick off the Cash recap DRAFT for the just-concluded contest. Fire-and-
+    // forget: it must never block or fail concluding, and it only creates a
+    // draft — an admin still reviews and publishes before kids see anything.
+    maybeAutoGenerateRecap(contestId)
 
     res.json({
       contest_id: result.contest_id,
