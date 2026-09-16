@@ -24,6 +24,7 @@ const participations = []           // participation rows
 const assets = new Map()            // asset_id -> {content_type, data (base64), size, created_at}
 const contestMessages = new Map()   // contest_id -> [message rows, chronological]
 const contestRecaps = new Map()     // contest_id -> recap record (Cash contest recap)
+const personalRecaps = new Map()    // "contest_id:user_id" -> personal mini-recap record
 
 // ── Portfolio helpers ─────────────────────────────────────────
 
@@ -566,6 +567,31 @@ async function saveContestRecap(recap) {
   return record
 }
 
+// Personal (per-kid) mini-recaps, keyed by "${contest_id}:${user_id}". Mirrors
+// the BQ `contest_recap_personal` table (migration 012).
+const _personalKey = (contestId, userId) => `${contestId}:${userId}`
+
+async function getPersonalRecap(contestId, userId) {
+  return personalRecaps.get(_personalKey(contestId, userId)) || null
+}
+
+async function savePersonalRecap(recap) {
+  if (!recap || !recap.contest_id || !recap.user_id) {
+    throw new Error('savePersonalRecap: contest_id and user_id required')
+  }
+  const now = new Date()
+  const key = _personalKey(recap.contest_id, recap.user_id)
+  const existing = personalRecaps.get(key)
+  const record = {
+    ...existing,
+    ...recap,
+    created_at: existing ? existing.created_at : now,
+    updated_at: now,
+  }
+  personalRecaps.set(key, record)
+  return record
+}
+
 // ── Persistence (snapshot to disk) ─────────────────────────────
 //
 // The store is pure in-memory, so a process restart (Fly deploy, crash, OOM)
@@ -612,6 +638,7 @@ function _serialize() {
     assets: [...assets.entries()],
     contestMessages: [...contestMessages.entries()],
     contestRecaps: [...contestRecaps.entries()],
+    personalRecaps: [...personalRecaps.entries()],
   }, _replacer)
 }
 
@@ -648,6 +675,7 @@ function restore() {
     assets.clear(); (data.assets || []).forEach(([k, v]) => assets.set(k, v))
     contestMessages.clear(); (data.contestMessages || []).forEach(([k, v]) => contestMessages.set(k, v))
     contestRecaps.clear(); (data.contestRecaps || []).forEach(([k, v]) => contestRecaps.set(k, v))
+    personalRecaps.clear(); (data.personalRecaps || []).forEach(([k, v]) => personalRecaps.set(k, v))
     _lastJson = _serialize()
     return users.size > 0 || portfolios.size > 0 || contests.size > 0
   } catch (err) {
@@ -710,6 +738,8 @@ module.exports = {
     createContestMessage,
     getContestRecap,
     saveContestRecap,
+    getPersonalRecap,
+    savePersonalRecap,
   },
   asset: {
     createAsset,

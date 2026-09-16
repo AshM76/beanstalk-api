@@ -91,6 +91,55 @@ function buildUserPrompt(input) {
   ].join('\n')
 }
 
+// Cash's voice for a PRIVATE, per-kid mini-recap. Shorter and one-to-one.
+const PERSONAL_SYSTEM_PROMPT = `You are Cash, the friendly financial-literacy mascot inside Beanstalk, an
+educational VIRTUAL stock-trading app for kids and teens. A contest just ended,
+and you're writing a SHORT, PRIVATE recap for ONE player — just for them.
+Everything is virtual/paper trading; no real money is involved.
+
+You'll get a small JSON INPUT with that player's ALREADY-COMPUTED, VERIFIED
+results (their return, whether they beat the market ghost "Sammy P." and the
+savings ghost "Piggy", their best pick, and a short "lessons_hook"). Narrate it
+warmly — don't compute new numbers.
+
+Hard rules:
+- Use ONLY the numbers in the INPUT; never invent one.
+- ALWAYS encouraging and growth-minded, whatever the result. If they had a
+  losing month, be kind and forward-looking — never shaming, never "you lost".
+  Frame it as learning. This is private, so you may speak directly to them
+  ("you"), but stay positive.
+- NOT investment advice. No predictions, no buy/sell tips.
+- Keep it SHORT: 2-3 sentences of body, one gentle takeaway.
+
+Respond with ONLY a single JSON object (no prose, no markdown fences):
+
+{
+  "headline": string,          // one warm, personal sentence
+  "body": string,              // 2-3 encouraging sentences on how they did
+  "lesson": string,            // one gentle, growth-framed takeaway
+  "cash_signoff": string       // a short, kind close
+}`
+
+/**
+ * Build the personal user message: just that kid's slice of the INPUT plus a
+ * little contest context.
+ */
+function buildPersonalUserPrompt(input) {
+  const context = {
+    contest: input.contest,
+    market_context: input.market_context,
+    personal: input.personal,
+  }
+  return [
+    'Here is ONE player\'s private results from the contest that just ended.',
+    'Write their short personal recap as Cash. Use only these numbers, stay',
+    'kind and encouraging, and reply with ONLY the JSON object.',
+    '',
+    'PLAYER INPUT:',
+    JSON.stringify(context, null, 2),
+  ].join('\n')
+}
+
 /**
  * Extract the recap JSON object from a model text response. Tolerant of stray
  * prose or ```json fences by slicing to the outermost braces.
@@ -108,10 +157,11 @@ function extractRecapObject(text) {
 }
 
 /**
- * Default model call: raw POST to the Anthropic Messages API, mirroring
- * src/routes/ai.js. Returns the parsed recap object.
+ * Low-level Anthropic call, mirroring src/routes/ai.js: raw POST to the
+ * Messages API with a stable (cache-friendly) system prompt. Returns the parsed
+ * JSON object from the model's text response.
  */
-async function defaultCallModel(input, { model } = {}) {
+async function _postAnthropic({ system, userText, model, maxTokens }) {
   const res = await fetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: {
@@ -121,10 +171,9 @@ async function defaultCallModel(input, { model } = {}) {
     },
     body: JSON.stringify({
       model: model || recapModel(),
-      max_tokens: 1500,
-      // A stable system prompt → cache-friendly; only the INPUT varies.
-      system: [{ type: 'text', text: RECAP_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: buildUserPrompt(input) }],
+      max_tokens: maxTokens || 1500,
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: userText }],
     }),
   })
   if (!res.ok) {
@@ -136,6 +185,21 @@ async function defaultCallModel(input, { model } = {}) {
     ? data.content.filter(c => c && c.type === 'text' && typeof c.text === 'string').map(c => c.text).join('').trim()
     : ''
   return extractRecapObject(text)
+}
+
+/** Default GROUP recap model call. Returns the parsed recap object. */
+async function defaultCallModel(input, { model } = {}) {
+  return _postAnthropic({ system: RECAP_SYSTEM_PROMPT, userText: buildUserPrompt(input), model })
+}
+
+/** Default PERSONAL mini-recap model call. Shorter → smaller max_tokens. */
+async function defaultCallPersonalModel(input, { model } = {}) {
+  return _postAnthropic({
+    system: PERSONAL_SYSTEM_PROMPT,
+    userText: buildPersonalUserPrompt(input),
+    model,
+    maxTokens: 700,
+  })
 }
 
 function isNonEmptyString(v) {
@@ -193,6 +257,34 @@ function validateRecap(raw, input) {
     highlights,
     benchmark_scoreboard,
     lessons,
+    cash_signoff: recap.cash_signoff.trim(),
+  }
+}
+
+/**
+ * Validate a PERSONAL mini-recap and PIN its numbers (return, beat flags) to
+ * the verified personal INPUT. Throws on a structurally unusable recap.
+ */
+function validatePersonalRecap(raw, input) {
+  const recap = extractRecapObject(raw)
+
+  const missing = []
+  if (!isNonEmptyString(recap.headline)) missing.push('headline')
+  if (!isNonEmptyString(recap.body)) missing.push('body')
+  if (!isNonEmptyString(recap.cash_signoff)) missing.push('cash_signoff')
+  if (missing.length) {
+    throw new Error(`recap: personal output missing required field(s): ${missing.join(', ')}`)
+  }
+
+  const p = (input && input.personal) || {}
+  return {
+    headline: recap.headline.trim(),
+    body: recap.body.trim(),
+    // Verified figures, straight from the INPUT — the model only narrates them.
+    your_return_percent: p.return_percent ?? null,
+    beat_market: p.beat_sammy_p ?? null,
+    beat_savings: p.beat_piggy ?? null,
+    lesson: isNonEmptyString(recap.lesson) ? recap.lesson.trim() : '',
     cash_signoff: recap.cash_signoff.trim(),
   }
 }
@@ -292,13 +384,63 @@ async function getPublishedRecap(contestId, opts = {}) {
   return existing
 }
 
+/**
+ * Get (or lazily generate) the PERSONAL mini-recap for one player.
+ *
+ * Gated on the GROUP recap being published — the personal recap inherits the
+ * admin's tone approval and is only offered once the contest recap is live.
+ * Generated on first open per kid and cached; private to that kid.
+ *
+ * Returns null (the route 404s) when the group recap isn't published yet, or
+ * when the user wasn't a scored participant (no personal INPUT branch).
+ *
+ * @param {string} contestId
+ * @param {string} userId
+ * @param {object} [opts]  { force?, model?, callModel?, deps? }
+ * @returns {Promise<object|null>} the stored personal recap record, or null
+ */
+async function getOrGeneratePersonalRecap(contestId, userId, opts = {}) {
+  const { contestService, benchmarkService } = resolveDeps(opts)
+  const callModel = opts.callModel || defaultCallPersonalModel
+  const model = opts.model || recapModel()
+
+  // Personal recaps are gated on the published group recap.
+  const group = await getPublishedRecap(contestId, { deps: { contestService } })
+  if (!group) return null
+
+  const existing = await contestService.getPersonalRecap(contestId, userId)
+  if (existing && existing.recap && !opts.force) return existing
+
+  const input = await recapInput.assembleRecapInput(contestId, {
+    personalUserId: userId,
+    deps: { contestService, benchmarkService },
+  })
+  // No personal branch → the user wasn't a scored participant in this contest.
+  if (!input.personal) return null
+
+  const raw = await callModel(input, { model })
+  const recap = validatePersonalRecap(raw, input)
+
+  return contestService.savePersonalRecap({
+    contest_id: contestId,
+    user_id: userId,
+    recap,
+    model,
+    generated_at: new Date(),
+  })
+}
+
 module.exports = {
   generateRecap,
   publishRecap,
   getPublishedRecap,
+  getOrGeneratePersonalRecap,
   // exported for tests
   RECAP_SYSTEM_PROMPT,
+  PERSONAL_SYSTEM_PROMPT,
   validateRecap,
+  validatePersonalRecap,
   extractRecapObject,
   buildUserPrompt,
+  buildPersonalUserPrompt,
 }

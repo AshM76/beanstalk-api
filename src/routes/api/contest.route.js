@@ -25,6 +25,7 @@ router.post('/contests/:contestId/conclude', contestController.concludeContest)
 // GET returns only a published recap (404 otherwise).
 router.post('/contests/:contestId/recap/generate', contestController.generateContestRecap)
 router.post('/contests/:contestId/recap/publish', contestController.publishContestRecap)
+router.get('/contests/:contestId/recap/me', contestController.getMyContestRecap)
 router.get('/contests/:contestId/recap', contestController.getContestRecap)
 
 module.exports = router

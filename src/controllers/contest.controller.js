@@ -652,6 +652,24 @@ async function getContestRecap(req, res) {
   }
 }
 
+/**
+ * GET /api/contests/:contestId/recap/me  (authenticated)
+ * The requesting user's private mini-recap. Lazily generated on first open and
+ * cached; only available once the group recap is published (404 otherwise, or
+ * when the user wasn't a scored participant).
+ */
+async function getMyContestRecap(req, res) {
+  try {
+    const { contestId } = req.params
+    const record = await recapService.getOrGeneratePersonalRecap(contestId, req.user.user_id)
+    if (!record) return res.status(404).json({ error: 'No personal recap available yet' })
+    return res.json(record)
+  } catch (error) {
+    console.error('[recap] personal fetch failed:', error.message)
+    return res.status(502).json({ error: 'Failed to load your recap. Try again in a moment.' })
+  }
+}
+
 module.exports = {
   createContest,
   listContests,
@@ -666,4 +684,5 @@ module.exports = {
   generateContestRecap,
   publishContestRecap,
   getContestRecap,
+  getMyContestRecap,
 }
