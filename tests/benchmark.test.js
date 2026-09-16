@@ -16,13 +16,17 @@ const benchmarkService = require('../src/services/benchmark.service')
 const contest = { starting_balance: 10000, start_date: new Date('2026-01-01') }
 
 describe('benchmark.service — Sammy P. buy-and-hold curve', () => {
+  // Piggy is deterministic and always present, so these Sammy-P.-focused tests
+  // target the SPY ghost specifically rather than the whole array.
+  const sammy = (ghosts) => ghosts.find(g => g.user_id === 'ghost:spx')
+
   test('computes value and return from a price curve (SPY 400 → 460 = +15%)', async () => {
     const provider = async () => ({ startPrice: 400, currentPrice: 460 })
     const ghosts = await benchmarkService.computeGhostRankings(contest, provider)
 
-    expect(ghosts).toHaveLength(1)
-    const g = ghosts[0]
-    expect(g.user_id).toBe('ghost:spx')
+    // Both active ghosts compute for a past-dated contest.
+    expect(ghosts.map(g => g.user_id).sort()).toEqual(['ghost:cash', 'ghost:spx'])
+    const g = sammy(ghosts)
     expect(g.username).toBe('Sammy P.')
     expect(g.benchmark).toBe('S&P 500')
     expect(g.benchmark_symbol).toBe('SPY')
@@ -34,39 +38,85 @@ describe('benchmark.service — Sammy P. buy-and-hold curve', () => {
 
   test('a down market yields a loss (500 → 450 = -10%)', async () => {
     const provider = async () => ({ startPrice: 500, currentPrice: 450 })
-    const [g] = await benchmarkService.computeGhostRankings(contest, provider)
+    const g = sammy(await benchmarkService.computeGhostRankings(contest, provider))
     expect(g.portfolio_value).toBeCloseTo(9000, 6)
     expect(g.return_percent).toBeCloseTo(-10, 6)
   })
 
-  test('skips the ghost when price data is unavailable', async () => {
+  test('skips Sammy P. when price data is unavailable (Piggy still computes)', async () => {
     const provider = async () => ({ startPrice: null, currentPrice: null })
-    expect(await benchmarkService.computeGhostRankings(contest, provider)).toEqual([])
+    const ghosts = await benchmarkService.computeGhostRankings(contest, provider)
+    expect(sammy(ghosts)).toBeUndefined()
+    expect(ghosts.map(g => g.user_id)).toEqual(['ghost:cash'])
   })
 
-  test('skips when start price is zero (no divide-by-zero)', async () => {
+  test('skips Sammy P. when start price is zero (no divide-by-zero)', async () => {
     const provider = async () => ({ startPrice: 0, currentPrice: 100 })
-    expect(await benchmarkService.computeGhostRankings(contest, provider)).toEqual([])
+    expect(sammy(await benchmarkService.computeGhostRankings(contest, provider))).toBeUndefined()
   })
 
-  test('a provider error never breaks the board', async () => {
+  test('a price-provider error never breaks the board (Sammy P. skipped, Piggy stays)', async () => {
     const provider = async () => { throw new Error('market data boom') }
-    expect(await benchmarkService.computeGhostRankings(contest, provider)).toEqual([])
+    const ghosts = await benchmarkService.computeGhostRankings(contest, provider)
+    expect(sammy(ghosts)).toBeUndefined()
+    expect(ghosts.map(g => g.user_id)).toEqual(['ghost:cash'])
   })
 
-  test('no ghosts for a zero / missing starting balance', async () => {
+  test('no ghosts at all for a zero / missing starting balance', async () => {
     const provider = async () => ({ startPrice: 400, currentPrice: 460 })
     expect(await benchmarkService.computeGhostRankings({ starting_balance: 0, start_date: new Date() }, provider)).toEqual([])
     expect(await benchmarkService.computeGhostRankings(null, provider)).toEqual([])
   })
 
-  test('only Sammy P. is active in the prototype roster', () => {
+  test('Sammy P. and Piggy are the active ghosts in the prototype roster', () => {
     const active = benchmarkService.GHOST_BENCHMARKS.filter(g => g.active)
-    expect(active.map(g => g.username)).toEqual(['Sammy P.'])
+    expect(active.map(g => g.username).sort()).toEqual(['Piggy', 'Sammy P.'])
     // The rest of the planned roster is present but inactive for now.
     expect(benchmarkService.GHOST_BENCHMARKS.map(g => g.username)).toEqual(
-      expect.arrayContaining(['Sammy P.', 'Downey Jones', 'Nadia Q.', 'Rusty'])
+      expect.arrayContaining(['Sammy P.', 'Piggy', 'Downey Jones', 'Nadia Q.', 'Rusty'])
     )
+  })
+})
+
+describe('benchmark.service — Piggy savings baseline', () => {
+  const provider = async () => ({ startPrice: 400, currentPrice: 460 }) // Sammy P. +15%
+
+  test('compounds the savings APY over the elapsed contest window (~1 year → +4%)', async () => {
+    const oneYearAgo = { starting_balance: 10000, start_date: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000) }
+    const ghosts = await benchmarkService.computeGhostRankings(oneYearAgo, provider)
+
+    const piggy = ghosts.find(g => g.user_id === 'ghost:cash')
+    expect(piggy).toBeDefined()
+    expect(piggy.username).toBe('Piggy')
+    expect(piggy.benchmark).toBe('Savings')
+    expect(piggy.benchmark_symbol).toBeNull()
+    expect(piggy.position_count).toBe(0)
+    // (1 + 0.04)^(365/365) = 1.04 → 10400, +4%
+    expect(piggy.portfolio_value).toBeCloseTo(10400, 0)
+    expect(piggy.return_percent).toBeCloseTo(4, 1)
+  })
+
+  test('is flat (0%) for a contest that has not started yet', async () => {
+    const future = { starting_balance: 10000, start_date: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000) }
+    const [piggy] = (await benchmarkService.computeGhostRankings(future, provider))
+      .filter(g => g.user_id === 'ghost:cash')
+    expect(piggy.portfolio_value).toBeCloseTo(10000, 6)
+    expect(piggy.return_percent).toBeCloseTo(0, 6)
+  })
+
+  test('Piggy computes even when the market ghost has no data (deterministic)', async () => {
+    const noData = async () => ({ startPrice: null, currentPrice: null }) // Sammy P. skipped
+    const past = { starting_balance: 10000, start_date: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000) }
+    const ghosts = await benchmarkService.computeGhostRankings(past, noData)
+    expect(ghosts.map(g => g.user_id)).toEqual(['ghost:cash']) // only Piggy
+  })
+
+  test('ghostFactor: half a year of savings compounds correctly', async () => {
+    const contest = { start_date: new Date(Date.now() - 182.5 * 24 * 60 * 60 * 1000) }
+    const factor = await benchmarkService.ghostFactor(
+      { apy: 0.04 }, contest, provider,
+    )
+    expect(factor).toBeCloseTo(Math.pow(1.04, 0.5), 6)
   })
 })
 
@@ -82,14 +132,14 @@ describe('GET /api/contests/:id/leaderboard — benchmarks field', () => {
     return app
   }
 
-  test('leaderboard response carries a benchmarks array (empty when no market data)', async () => {
+  test('leaderboard response carries benchmarks — Piggy present, Sammy P. skipped without market data', async () => {
     const app = makeApp()
     const created = await request(app)
       .post('/api/contests')
       .send({
         name: 'Ghost Benchmark Test',
         age_groups: ['high_school'],
-        start_date: new Date(Date.now() + 86400000).toISOString(),
+        start_date: new Date(Date.now() + 86400000).toISOString(), // starts tomorrow
         end_date: new Date(Date.now() + 30 * 86400000).toISOString(),
         starting_balance: 10000,
       })
@@ -97,9 +147,17 @@ describe('GET /api/contests/:id/leaderboard — benchmarks field', () => {
 
     const res = await request(app).get(`/api/contests/${created.body.contest_id}/leaderboard`)
     expect(res.status).toBe(200)
-    expect(res.body).toHaveProperty('benchmarks')
     expect(Array.isArray(res.body.benchmarks)).toBe(true)
-    // No Alpaca creds in the test env → the ghost is skipped, not errored.
-    expect(res.body.benchmarks).toEqual([])
+
+    // Piggy is deterministic (no market data needed) so she always appears;
+    // Sammy P. is skipped in the credential-less test env (not errored).
+    const ids = res.body.benchmarks.map(b => b.user_id)
+    expect(ids).toEqual(['ghost:cash'])
+    const piggy = res.body.benchmarks[0]
+    expect(piggy.username).toBe('Piggy')
+    expect(piggy.is_ghost).toBe(true)
+    // Contest hasn't started → flat baseline at the starting balance.
+    expect(piggy.portfolio_value).toBeCloseTo(10000, 6)
+    expect(piggy.return_percent).toBeCloseTo(0, 6)
   })
 })

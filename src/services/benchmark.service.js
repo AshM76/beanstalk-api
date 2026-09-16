@@ -25,13 +25,21 @@ const alpacaService = require('./alpaca.service')
 
 // Ghost roster. Only `active` ghosts are computed; the rest are the planned
 // roster (see the design doc) and are here for when we expand the prototype.
-// Piggy (savings baseline) has no symbol — it'll use a flat rate, added later.
+// Annual percentage yield for Piggy, the "money left in a savings account"
+// baseline (a high-yield savings account ballpark). Deliberately a constant:
+// Piggy needs no market data, so she's always available and deterministic —
+// the anchor for "was moving the money around even worth it?".
+const SAVINGS_APY = 0.04 // 4.0% APY
+
+// Ghosts are one of two kinds:
+//   - symbol-based (an index ETF) → priced via the price provider
+//   - rate-based (an `apy`)       → a compounding savings curve, no market data
 const GHOST_BENCHMARKS = [
-  { id: 'ghost:spx', username: 'Sammy P.', symbol: 'SPY',  label: 'S&P 500',      active: true },
-  { id: 'ghost:dow', username: 'Downey Jones', symbol: 'DIA', label: 'Dow Jones', active: false },
-  { id: 'ghost:ndx', username: 'Nadia Q.', symbol: 'QQQ',  label: 'NASDAQ-100',   active: false },
-  { id: 'ghost:rut', username: 'Rusty',    symbol: 'IWM',  label: 'Russell 2000', active: false },
-  // { id: 'ghost:cash', username: 'Piggy', symbol: null, label: 'Savings', active: false },
+  { id: 'ghost:spx',  username: 'Sammy P.',     symbol: 'SPY', label: 'S&P 500',      active: true },
+  { id: 'ghost:cash', username: 'Piggy',        apy: SAVINGS_APY, label: 'Savings',    active: true },
+  { id: 'ghost:dow',  username: 'Downey Jones', symbol: 'DIA', label: 'Dow Jones',    active: false },
+  { id: 'ghost:ndx',  username: 'Nadia Q.',     symbol: 'QQQ', label: 'NASDAQ-100',   active: false },
+  { id: 'ghost:rut',  username: 'Rusty',        symbol: 'IWM', label: 'Russell 2000', active: false },
 ]
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
@@ -78,6 +86,31 @@ async function defaultPriceProvider(symbol, startDate) {
 }
 
 /**
+ * Growth factor (value_now / value_start) for one ghost over the contest window.
+ * Returns null when it can't be computed (skip the ghost).
+ *
+ *   - symbol ghost (index ETF): currentPrice / startPrice from the provider
+ *   - rate ghost (savings apy): (1 + apy) ^ (elapsed_days / 365), compounding
+ *     from the contest start; elapsed is clamped ≥ 0 so a not-yet-started
+ *     contest shows a flat 0%.
+ */
+async function ghostFactor(g, contest, priceProvider) {
+  if (g.symbol) {
+    const { startPrice, currentPrice } = await priceProvider(g.symbol, contest.start_date)
+    if (!startPrice || !currentPrice || startPrice <= 0) return null
+    return currentPrice / startPrice
+  }
+  if (typeof g.apy === 'number') {
+    const start = toDate(contest.start_date)
+    const startMs = start.getTime()
+    if (Number.isNaN(startMs)) return null
+    const elapsedDays = Math.max(0, (Date.now() - startMs) / MS_PER_DAY)
+    return Math.pow(1 + g.apy, elapsedDays / 365)
+  }
+  return null
+}
+
+/**
  * Compute ghost-player leaderboard entries for a contest.
  *
  * @param {object} contest         - contest record (needs starting_balance, start_date)
@@ -89,14 +122,14 @@ async function computeGhostRankings(contest, priceProvider = defaultPriceProvide
   const startingBalance = Number(contest.starting_balance) || 0
   if (startingBalance <= 0) return []
 
-  const ghosts = GHOST_BENCHMARKS.filter(g => g.active && g.symbol)
+  // Active ghosts: either a symbol (priced) or a rate (savings curve).
+  const ghosts = GHOST_BENCHMARKS.filter(g => g.active && (g.symbol || typeof g.apy === 'number'))
 
   const results = await Promise.all(ghosts.map(async (g) => {
     try {
-      const { startPrice, currentPrice } = await priceProvider(g.symbol, contest.start_date)
-      if (!startPrice || !currentPrice || startPrice <= 0) return null
+      const factor = await ghostFactor(g, contest, priceProvider)
+      if (factor == null || !Number.isFinite(factor)) return null
 
-      const factor = currentPrice / startPrice
       const value = startingBalance * factor
       const returnPercent = (factor - 1) * 100
 
@@ -107,14 +140,14 @@ async function computeGhostRankings(contest, priceProvider = defaultPriceProvide
         username: g.username,
         portfolio_value: value,
         return_percent: returnPercent,
-        position_count: 1,
-        best_performing_position: g.symbol,
-        best_position_return_percent: returnPercent,
+        position_count: g.symbol ? 1 : 0, // Piggy holds no positions
+        best_performing_position: g.symbol || null,
+        best_position_return_percent: g.symbol ? returnPercent : 0,
         last_trade_date: null,
         // Ghost metadata so clients can badge/label these rows distinctly.
         is_ghost: true,
         benchmark: g.label,
-        benchmark_symbol: g.symbol,
+        benchmark_symbol: g.symbol || null,
       }
     } catch (_) {
       return null // never let a benchmark failure break the leaderboard
@@ -126,6 +159,8 @@ async function computeGhostRankings(contest, priceProvider = defaultPriceProvide
 
 module.exports = {
   GHOST_BENCHMARKS,
+  SAVINGS_APY,
   computeGhostRankings,
+  ghostFactor,
   defaultPriceProvider,
 }
