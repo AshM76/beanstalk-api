@@ -21,4 +21,10 @@ router.post('/contests/:contestId/messages', contestController.postContestMessag
 router.get('/contests/:contestId/leaderboard', contestController.getLeaderboard)
 router.post('/contests/:contestId/conclude', contestController.concludeContest)
 
+// Contest recap (Cash-narrated): admin generate → review → publish; the public
+// GET returns only a published recap (404 otherwise).
+router.post('/contests/:contestId/recap/generate', contestController.generateContestRecap)
+router.post('/contests/:contestId/recap/publish', contestController.publishContestRecap)
+router.get('/contests/:contestId/recap', contestController.getContestRecap)
+
 module.exports = router

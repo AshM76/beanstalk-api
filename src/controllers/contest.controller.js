@@ -7,6 +7,9 @@ const contestService = require('../services/contest.service')
 const portfolioService = require('../services/portfolio.service')
 const alpacaService = require('../services/alpaca.service')
 const benchmarkService = require('../services/benchmark.service')
+const recapService = require('../services/recap.service')
+
+const ADMIN_ROLES = ['admin', 'contest_manager']
 
 // ── Learning-gate entry requirements ─────────────────────────────────────────
 // A contest can gate joining on learning progress: a minimum total XP and/or a
@@ -583,6 +586,72 @@ async function postContestMessage(req, res) {
   }
 }
 
+// ── Contest recap (Cash-narrated) ────────────────────────────────────────────
+// Admin generate → review → publish; kids only ever GET a published recap.
+
+/**
+ * POST /api/contests/:contestId/recap/generate  (admin/contest manager)
+ * Generate (or return the existing) recap DRAFT. Idempotent unless `?force=1`.
+ * The admin reads the returned draft, then publishes it separately.
+ */
+async function generateContestRecap(req, res) {
+  try {
+    if (!ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Only admins and contest managers can generate recaps' })
+    }
+    const { contestId } = req.params
+    const contest = await contestService.getContest(contestId)
+    if (!contest) return res.status(404).json({ error: 'Contest not found' })
+
+    const record = await recapService.generateRecap(contestId, {
+      force: req.query.force === '1' || req.query.force === 'true',
+      adminUserId: req.user.user_id,
+    })
+    return res.json(record)
+  } catch (error) {
+    console.error('[recap] generate failed:', error.message)
+    return res.status(502).json({ error: 'Failed to generate recap. Try again in a moment.' })
+  }
+}
+
+/**
+ * POST /api/contests/:contestId/recap/publish  (admin/contest manager)
+ * Flip the reviewed draft to published so kids can see it.
+ */
+async function publishContestRecap(req, res) {
+  try {
+    if (!ADMIN_ROLES.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Only admins and contest managers can publish recaps' })
+    }
+    const { contestId } = req.params
+    const record = await recapService.publishRecap(contestId)
+    return res.json(record)
+  } catch (error) {
+    if (error.code === 'RECAP_NOT_FOUND') {
+      return res.status(404).json({ error: 'No recap to publish; generate one first' })
+    }
+    console.error('[recap] publish failed:', error.message)
+    return res.status(500).json({ error: 'Failed to publish recap' })
+  }
+}
+
+/**
+ * GET /api/contests/:contestId/recap  (public)
+ * Returns the recap only when published; 404 while it's an unreviewed draft or
+ * doesn't exist, so kids never see a draft.
+ */
+async function getContestRecap(req, res) {
+  try {
+    const { contestId } = req.params
+    const record = await recapService.getPublishedRecap(contestId)
+    if (!record) return res.status(404).json({ error: 'No recap available for this contest yet' })
+    return res.json(record)
+  } catch (error) {
+    console.error('[recap] fetch failed:', error.message)
+    return res.status(500).json({ error: 'Failed to fetch recap' })
+  }
+}
+
 module.exports = {
   createContest,
   listContests,
@@ -594,4 +663,7 @@ module.exports = {
   getLeaderboard,
   concludeContest,
   getContestParticipants,
+  generateContestRecap,
+  publishContestRecap,
+  getContestRecap,
 }
