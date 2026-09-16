@@ -6,6 +6,7 @@
 const contestService = require('../services/contest.service')
 const portfolioService = require('../services/portfolio.service')
 const alpacaService = require('../services/alpaca.service')
+const benchmarkService = require('../services/benchmark.service')
 
 // ── Learning-gate entry requirements ─────────────────────────────────────────
 // A contest can gate joining on learning progress: a minimum total XP and/or a
@@ -417,9 +418,22 @@ async function getLeaderboard(req, res) {
 
     const leaderboards = await contestService.getLeaderboard(contestId, age_group)
 
+    // Ghost benchmark players (PROTOTYPE — Sammy P./S&P 500). A read-only
+    // buy-and-hold curve over the contest window, returned alongside the real
+    // rankings so clients can show "did you beat the market?". Never blocks the
+    // leaderboard: any failure yields an empty list.
+    let benchmarks = []
+    try {
+      const contest = await contestService.getContest(contestId)
+      benchmarks = await benchmarkService.computeGhostRankings(contest)
+    } catch (err) {
+      console.error('[leaderboard] benchmark computation skipped:', err.message)
+    }
+
     res.json({
       contest_id: contestId,
       leaderboards: leaderboards,
+      benchmarks,
       as_of: new Date().toISOString(),
     })
   } catch (error) {
