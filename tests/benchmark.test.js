@@ -21,10 +21,12 @@ describe('benchmark.service — Sammy P. buy-and-hold curve', () => {
   const sammy = (ghosts) => ghosts.find(g => g.user_id === 'ghost:spx')
 
   test('computes value and return from a price curve (SPY 400 → 460 = +15%)', async () => {
-    const provider = async () => ({ startPrice: 400, currentPrice: 460 })
+    // SPY-only stub so this stays focused on Sammy P.; other index ghosts skip.
+    const provider = async (symbol) =>
+      symbol === 'SPY' ? { startPrice: 400, currentPrice: 460 } : { startPrice: null, currentPrice: null }
     const ghosts = await benchmarkService.computeGhostRankings(contest, provider)
 
-    // Both active ghosts compute for a past-dated contest.
+    // Only Sammy P. (priced) and Piggy (deterministic) compute here.
     expect(ghosts.map(g => g.user_id).sort()).toEqual(['ghost:cash', 'ghost:spx'])
     const g = sammy(ghosts)
     expect(g.username).toBe('Sammy P.')
@@ -68,13 +70,35 @@ describe('benchmark.service — Sammy P. buy-and-hold curve', () => {
     expect(await benchmarkService.computeGhostRankings(null, provider)).toEqual([])
   })
 
-  test('Sammy P. and Piggy are the active ghosts in the prototype roster', () => {
+  test('the full five-ghost roster is active', () => {
     const active = benchmarkService.GHOST_BENCHMARKS.filter(g => g.active)
-    expect(active.map(g => g.username).sort()).toEqual(['Piggy', 'Sammy P.'])
-    // The rest of the planned roster is present but inactive for now.
-    expect(benchmarkService.GHOST_BENCHMARKS.map(g => g.username)).toEqual(
-      expect.arrayContaining(['Sammy P.', 'Piggy', 'Downey Jones', 'Nadia Q.', 'Rusty'])
+    expect(active.map(g => g.username).sort()).toEqual(
+      ['Downey Jones', 'Nadia Q.', 'Piggy', 'Rusty', 'Sammy P.']
     )
+  })
+
+  test('all four index ghosts compute from priced curves (+ Piggy)', async () => {
+    // Distinct curve per symbol so returns differ and ranking is meaningful.
+    const curves = {
+      SPY: { startPrice: 400, currentPrice: 460 }, // +15%  Sammy P.
+      DIA: { startPrice: 350, currentPrice: 385 }, // +10%  Downey Jones
+      QQQ: { startPrice: 400, currentPrice: 480 }, // +20%  Nadia Q.
+      IWM: { startPrice: 200, currentPrice: 190 }, // −5%   Rusty
+    }
+    const provider = async (symbol) => curves[symbol] || { startPrice: null, currentPrice: null }
+    const ghosts = await benchmarkService.computeGhostRankings(contest, provider)
+
+    const by = Object.fromEntries(ghosts.map(g => [g.user_id, g]))
+    expect(Object.keys(by).sort()).toEqual(
+      ['ghost:cash', 'ghost:dow', 'ghost:ndx', 'ghost:rut', 'ghost:spx']
+    )
+    expect(by['ghost:spx'].return_percent).toBeCloseTo(15, 6)
+    expect(by['ghost:dow'].return_percent).toBeCloseTo(10, 6)
+    expect(by['ghost:ndx'].return_percent).toBeCloseTo(20, 6)
+    expect(by['ghost:rut'].return_percent).toBeCloseTo(-5, 6)
+    expect(by['ghost:dow'].benchmark).toBe('Dow Jones')
+    expect(by['ghost:ndx'].benchmark_symbol).toBe('QQQ')
+    expect(by['ghost:rut'].username).toBe('Rusty')
   })
 })
 
